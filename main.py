@@ -1671,7 +1671,34 @@ class PremiumTab(QWidget):
         # Sound list
         self.target_sound_list = QListWidget()
         self.target_sound_list.setFixedHeight(300)
-        self.target_sound_list.setAlternatingRowColors(True)
+        self.target_sound_list.setAlternatingRowColors(False)  # Disable system alternating colors
+        self.target_sound_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(30, 30, 30, 0.9);
+                border: 1px solid rgba(168, 85, 247, 0.3);
+                border-radius: 6px;
+                color: #ffffff;
+                font-size: 13px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 8px 12px;
+                border: none;
+                border-radius: 4px;
+                margin: 1px;
+                color: #ffffff;
+                background: rgba(35, 35, 35, 0.9);
+            }
+            QListWidget::item:selected {
+                background: rgba(168, 85, 247, 0.5);
+                color: #ffffff;
+                font-weight: 600;
+            }
+            QListWidget::item:hover {
+                background: rgba(168, 85, 247, 0.3);
+                color: #ffffff;
+            }
+        """)
         target_layout.addWidget(self.target_sound_list)
         
         # Add spacer to match preview buttons height on the right side
@@ -1708,7 +1735,34 @@ class PremiumTab(QWidget):
         # Sound list
         self.replacement_sound_list = QListWidget()
         self.replacement_sound_list.setFixedHeight(300)
-        self.replacement_sound_list.setAlternatingRowColors(True)
+        self.replacement_sound_list.setAlternatingRowColors(False)  # Disable system alternating colors
+        self.replacement_sound_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(30, 30, 30, 0.9);
+                border: 1px solid rgba(168, 85, 247, 0.3);
+                border-radius: 6px;
+                color: #ffffff;
+                font-size: 13px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 8px 12px;
+                border: none;
+                border-radius: 4px;
+                margin: 1px;
+                color: #ffffff;
+                background: rgba(35, 35, 35, 0.9);
+            }
+            QListWidget::item:selected {
+                background: rgba(168, 85, 247, 0.5);
+                color: #ffffff;
+                font-weight: 600;
+            }
+            QListWidget::item:hover {
+                background: rgba(168, 85, 247, 0.3);
+                color: #ffffff;
+            }
+        """)
         replacement_layout.addWidget(self.replacement_sound_list)
         
         
