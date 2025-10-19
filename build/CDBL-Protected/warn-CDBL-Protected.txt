@@ -14,16 +14,15 @@ Types if import:
 IMPORTANT: Do NOT post this list to the issue-tracker. Use it as a basis for
             tracking down the missing module yourself. Thanks!
 
-missing module named posix - imported by os (conditional, optional), posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional)
-missing module named resource - imported by posix (top-level)
-missing module named _frozen_importlib_external - imported by importlib._bootstrap (delayed), importlib (optional), importlib.abc (optional), zipimport (top-level)
-excluded module named _frozen_importlib - imported by importlib (optional), importlib.abc (optional), zipimport (top-level)
 missing module named pyimod02_importers - imported by C:\Users\Emangod\Documents\GitHub\CDBL-Dev\.venv\Lib\site-packages\PyInstaller\hooks\rthooks\pyi_rth_pkgutil.py (delayed), C:\Users\Emangod\Documents\GitHub\CDBL-Dev\.venv\Lib\site-packages\PyInstaller\hooks\rthooks\pyi_rth_pkgres.py (delayed)
-missing module named pwd - imported by posixpath (delayed, conditional, optional), shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), setuptools._distutils.util (delayed, conditional, optional), netrc (delayed, conditional), getpass (delayed), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional), http.server (delayed, optional)
+missing module named pwd - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), posixpath (delayed, conditional, optional), setuptools._distutils.util (delayed, conditional, optional), netrc (delayed, conditional), getpass (delayed), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional), http.server (delayed, optional)
 missing module named grp - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional)
 missing module named _posixsubprocess - imported by subprocess (conditional), multiprocessing.util (delayed)
 missing module named fcntl - imported by subprocess (optional), tqdm.utils (delayed, optional)
 missing module named _manylinux - imported by packaging._manylinux (delayed, optional), setuptools._vendor.packaging._manylinux (delayed, optional), setuptools._vendor.wheel.vendored.packaging._manylinux (delayed, optional)
+missing module named posix - imported by shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional), posixpath (optional)
+missing module named resource - imported by posix (top-level)
+missing module named _frozen_importlib_external - imported by importlib._bootstrap (delayed), importlib (optional), importlib.abc (optional), zipimport (top-level)
 missing module named _posixshmem - imported by multiprocessing.resource_tracker (conditional), multiprocessing.shared_memory (conditional)
 missing module named multiprocessing.set_start_method - imported by multiprocessing (top-level), multiprocessing.spawn (top-level)
 missing module named multiprocessing.get_start_method - imported by multiprocessing (top-level), multiprocessing.spawn (top-level)
@@ -51,6 +50,7 @@ missing module named _typeshed - imported by setuptools._distutils.dist (conditi
 missing module named jnius - imported by setuptools._vendor.platformdirs.android (delayed, conditional, optional)
 missing module named android - imported by setuptools._vendor.platformdirs.android (delayed, conditional, optional)
 missing module named importlib_resources - imported by setuptools._vendor.jaraco.text (optional), tqdm.cli (delayed, conditional, optional)
+excluded module named _frozen_importlib - imported by importlib (optional), importlib.abc (optional), zipimport (top-level)
 missing module named pygame._common - imported by pygame.rect (top-level), pygame.rwobject (top-level), pygame.color (top-level), pygame.surface (top-level), pygame.display (top-level), pygame.draw (top-level), pygame.image (top-level), pygame.key (top-level), pygame.mask (top-level), pygame.transform (top-level), pygame.pixelcopy (top-level), pygame.pixelarray (top-level), pygame.font (top-level), pygame.mixer_music (top-level), pygame.mixer (top-level)
 excluded module named numpy - imported by pygame.pixelcopy (top-level), pygame.mixer (top-level), pygame.surfarray (top-level), pygame.sndarray (top-level), pygame (delayed)
 missing module named vms_lib - imported by platform (delayed, optional)

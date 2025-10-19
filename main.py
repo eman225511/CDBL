@@ -14,10 +14,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QPushButton, QComboBox, QLabel, QFrame, QGridLayout,
     QSpinBox, QDoubleSpinBox, QSlider, QListWidget, QTextEdit, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QSizePolicy, QProgressBar, QDialog,
-    QLineEdit
+    QLineEdit, QMenu
 )
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QTimer, Signal, QThread, QObject
-from PySide6.QtGui import QPixmap, QFont, QPalette, QColor, QIcon, QPainterPath, QRegion
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QTimer, Signal, QThread, QObject, QUrl
+from PySide6.QtGui import QPixmap, QFont, QPalette, QColor, QIcon, QPainterPath, QRegion, QDesktopServices
 
 # Try to import pygame for audio playback
 try:
@@ -156,32 +156,6 @@ class AudioWorker(QObject):
         self.should_stop = True
         if PYGAME_AVAILABLE:
             pygame.mixer.stop()
-
-
-class AssetDownloadWorker(QThread):
-    """Worker thread for asset downloads with progress tracking"""
-    finished = Signal(str)
-    error = Signal(str)
-    progress = Signal(int, str)  # progress percentage, status message
-    
-    def __init__(self):
-        super().__init__()
-    
-    def run(self):
-        try:
-            from src.assets import download_and_prepare_assets_with_progress
-            # Call the download function with progress callback
-            result = download_and_prepare_assets_with_progress(self.progress_callback)
-            if result["success"]:
-                self.finished.emit(result["message"])
-            else:
-                self.error.emit(result["message"])
-        except Exception as e:
-            self.error.emit(f"Asset download failed: {str(e)}")
-    
-    def progress_callback(self, percentage, message):
-        """Callback function for progress updates"""
-        self.progress.emit(percentage, message)
 
 
 class ModernButton(QPushButton):
@@ -1120,7 +1094,7 @@ class ToolsTab(QWidget):
     
     def __init__(self):
         super().__init__()
-        self.download_worker = None  # Asset download worker thread
+        self.download_worker = None  # Skybox download worker thread
         self.init_ui()
         
     def init_ui(self):
@@ -1212,11 +1186,6 @@ class ToolsTab(QWidget):
         skybox_buttons = QHBoxLayout()
         skybox_buttons.setSpacing(15)
         
-        self.download_assets_btn = ModernButton("Download Assets")
-        self.download_assets_btn.setObjectName("secondaryButton")
-        self.download_assets_btn.clicked.connect(self.download_assets)
-        skybox_buttons.addWidget(self.download_assets_btn)
-        
         self.apply_skybox_fix_btn = ModernButton("Apply Skybox Fix")
         self.apply_skybox_fix_btn.setObjectName("primaryButton")
         self.apply_skybox_fix_btn.clicked.connect(self.apply_skybox_fix)
@@ -1301,50 +1270,6 @@ class ToolsTab(QWidget):
                     
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to remove fastflags: {str(e)}")
-    
-    def download_assets(self):
-        """Download required assets for skybox fix using worker thread"""
-        # Don't start if already downloading
-        if self.download_worker and self.download_worker.isRunning():
-            return
-        
-        # Disable button and show progress
-        self.download_assets_btn.setEnabled(False)
-        self.download_assets_btn.setText("Downloading...")
-        self.download_progress.setVisible(True)
-        self.progress_status_label.setVisible(True)
-        self.download_progress.setValue(0)
-        
-        # Create and start worker thread
-        self.download_worker = AssetDownloadWorker()
-        self.download_worker.progress.connect(self.on_download_progress)
-        self.download_worker.finished.connect(self.on_download_finished)
-        self.download_worker.error.connect(self.on_download_error)
-        self.download_worker.start()
-    
-    def on_download_progress(self, percentage, message):
-        """Handle progress updates from worker thread"""
-        self.download_progress.setValue(percentage)
-        self.progress_status_label.setText(message)
-    
-    def on_download_finished(self, message):
-        """Handle successful download completion"""
-        self.download_progress.setVisible(False)
-        self.progress_status_label.setVisible(False)
-        self.download_assets_btn.setEnabled(True)
-        self.download_assets_btn.setText("Download Assets")
-        
-        QMessageBox.information(self, "Success", message)
-        self.update_cache_info()
-    
-    def on_download_error(self, error_message):
-        """Handle download errors"""
-        self.download_progress.setVisible(False)
-        self.progress_status_label.setVisible(False)
-        self.download_assets_btn.setEnabled(True)
-        self.download_assets_btn.setText("Download Assets")
-        
-        QMessageBox.critical(self, "Error", f"Failed to download assets: {error_message}")
     
     def apply_skybox_fix(self):
         """Apply skybox fix with FLEASION_FLAG and asset swapping"""
@@ -1556,15 +1481,27 @@ class PremiumTab(QWidget):
         
         help_text = QLabel(
             "Don't have a license key?\n"
-            "You can purchase a Premium key from: https://emanshop.mysellauth.com/\n\n"
-            "Having issues activating your license?\n"
-            "• Make sure you're connected to the internet\n"
-            "• Check that your license key is correct\n"
-            "• Each license can only be activated on one device"
+            "You can purchase a Premium key from: "
         )
         help_text.setObjectName("settingsDescription")
         help_text.setWordWrap(True)
         help_layout.addWidget(help_text)
+        
+        # Clickable link
+        shop_link = QLabel('<a href="https://emanshop.mysellauth.com/" style="color: #A855F7;">https://emanshop.mysellauth.com/</a>')
+        shop_link.setOpenExternalLinks(True)
+        shop_link.setObjectName("settingsDescription")
+        help_layout.addWidget(shop_link)
+        
+        help_text2 = QLabel(
+            "\nHaving issues activating your license?\n"
+            "• Make sure you're connected to the internet\n"
+            "• Check that your license key is correct\n"
+            "• Each license can only be activated on one device"
+        )
+        help_text2.setObjectName("settingsDescription")
+        help_text2.setWordWrap(True)
+        help_layout.addWidget(help_text2)
         
         help_group.setLayout(help_layout)
         self.content_layout.addWidget(help_group)
@@ -2419,6 +2356,72 @@ class CustomTitleBar(QWidget):
         version_label.setObjectName("versionLabel")
         title_layout.addWidget(version_label)
         
+        # Discord button with menu - using QLabel for better icon control
+        discord_container = QWidget()
+        discord_container.setFixedSize(34, 32)
+        discord_container.setCursor(Qt.CursorShape.PointingHandCursor)
+        discord_container.setToolTip("Join our Discord servers")
+        discord_container.setObjectName("discordContainer")
+        discord_container.setStyleSheet("""
+            QWidget#discordContainer {
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                           stop: 0 #5865F2, 
+                                           stop: 1 #7289DA);
+                border: none;
+                border-radius: 6px;
+                margin-left: 8px;
+            }
+            QWidget#discordContainer:hover {
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                           stop: 0 #4752C4, 
+                                           stop: 1 #5865F2);
+            }
+        """)
+        
+        discord_layout = QVBoxLayout(discord_container)
+        discord_layout.setContentsMargins(10, 6, 2, 6)  # Even more left margin, less right margin
+        discord_layout.setSpacing(0)
+        
+        self.discord_btn = QLabel()
+        self.discord_btn.setObjectName("discordIcon")
+        self.discord_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.discord_btn.setFixedSize(20, 20)  # Exact size for 20px icon
+        discord_layout.addWidget(self.discord_btn)
+        
+        # Create Discord menu
+        self.discord_menu = QMenu(self)
+        self.discord_menu.setStyleSheet("""
+            QMenu {
+                background: rgba(30, 30, 30, 0.95);
+                border: 1px solid rgba(168, 85, 247, 0.4);
+                border-radius: 8px;
+                padding: 8px;
+                color: #ffffff;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QMenu::item:selected {
+                background: rgba(168, 85, 247, 0.3);
+            }
+        """)
+        
+        # Add menu items
+        emans_empire_action = self.discord_menu.addAction("Emans Empire")
+        emans_empire_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl("https://discord.gg/W5DgDZ4Hu6")))
+        
+        illusion_action = self.discord_menu.addAction("Illusion")
+        illusion_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl("https://discord.gg/5QfcUP2GBq")))
+        
+        # Make the container clickable
+        discord_container.mousePressEvent = self.show_discord_menu
+        
+        title_layout.addWidget(discord_container)
+        # Load Discord icon from web
+        self.load_discord_icon()
+        
         layout.addLayout(title_layout)
         layout.addStretch()
         
@@ -2446,6 +2449,55 @@ class CustomTitleBar(QWidget):
         
         # Make the title bar draggable
         self.old_pos = None
+    
+    def load_discord_icon(self):
+        """Load Discord icon from web URL"""
+        try:
+            import requests
+            from io import BytesIO
+            from PySide6.QtSvg import QSvgRenderer
+            from PySide6.QtGui import QPixmap, QPainter
+            
+            # Discord logo SVG - using a public CDN that allows requests
+            # This is the official Discord logo from their brand assets
+            discord_icon_url = "https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/discord.svg"
+            
+            # Add headers to mimic a browser request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # Download the SVG
+            response = requests.get(discord_icon_url, headers=headers, timeout=5)
+            response.raise_for_status()
+            
+            # Create SVG renderer
+            svg_renderer = QSvgRenderer(response.content)
+            
+            # Create pixmap and render SVG to it - 20x20 for perfect centering in 32x32 button
+            pixmap = QPixmap(20, 20)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            
+            painter = QPainter(pixmap)
+            svg_renderer.render(painter)
+            painter.end()
+            
+            # Set pixmap to QLabel with perfect centering
+            self.discord_btn.setPixmap(pixmap)
+            self.discord_btn.setScaledContents(False)  # Keep original size
+            
+        except Exception as e:
+            # Fallback to Discord emoji if download fails
+            print(f"Failed to load Discord icon: {e}")
+            self.discord_btn.setText("💬")
+            self.discord_btn.setStyleSheet("font-size: 16px; color: white;")
+    
+    def show_discord_menu(self, event):
+        """Show Discord menu when clicked"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Show menu at the bottom of the button
+            pos = self.discord_btn.mapToGlobal(self.discord_btn.rect().bottomLeft())
+            self.discord_menu.exec(pos)
         
     def minimize_window(self):
         if self.parent_window:
@@ -2566,6 +2618,36 @@ class CDBlauncher(QMainWindow):
             background-color: rgba(255, 255, 255, 0.1);
             border-radius: 8px;
             padding: 2px 6px;
+        }
+        
+        /* Discord Button */
+        QPushButton#discordButton {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                       stop: 0 #5865F2, 
+                                       stop: 1 #7289DA);
+            border: none;
+            border-radius: 6px;
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 600;
+            margin-left: 8px;
+            padding: 0px;
+        }
+        
+        QPushButton#discordButton:hover {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                       stop: 0 #4752C4, 
+                                       stop: 1 #5865F2);
+        }
+        
+        QPushButton#discordButton:pressed {
+            background: #4752C4;
+        }
+        
+        QPushButton#discordButton::menu-indicator {
+            image: none;
+            width: 0px;
+            height: 0px;
         }
         
         /* Window Controls */
@@ -3107,6 +3189,14 @@ def main():
         # User opened download page, continue to app
     elif update_choice == 'skip':
         print("User chose to skip update.")
+    
+    # Ensure assets.json structure exists on every launch
+    print("Ensuring assets.json structure...")
+    try:
+        from src.first_run import ensure_assets_json_structure
+        ensure_assets_json_structure()
+    except Exception as e:
+        print(f"⚠️ Warning: Could not ensure assets.json structure: {e}")
     
     # Normal application startup
     window = CDBlauncher()

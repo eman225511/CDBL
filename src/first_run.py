@@ -35,11 +35,15 @@ class FirstRunSetupWorker(QThread):
             self.progress.emit(15, "Creating directories...")
             self.create_directories()
             
+            # Download assets.json first
+            self.progress.emit(25, "Downloading assets.json...")
+            self.download_assets_json()
+            
             # Download core files
-            self.progress.emit(35, "Checking and downloading files...")
+            self.progress.emit(45, "Checking and downloading files...")
             self.download_core_files()
             
-            # Set up configuration
+            # Set up configuration (includes assets.json structure check)
             self.progress.emit(70, "Setting up configuration...")
             self.setup_configuration()
             
@@ -61,23 +65,45 @@ class FirstRunSetupWorker(QThread):
     
     def create_directories(self):
         """Create necessary application directories"""
-        self.progress.emit(25, "Checking directories...")
+        self.progress.emit(20, "Checking directories...")
         from src.core import ensure_directories
         ensure_directories()
     
-    def download_core_files(self):
-        """Download essential files"""
+    def download_assets_json(self):
+        """Download assets.json file during first run setup"""
         try:
-            self.progress.emit(45, "Checking existing files...")
+            self.progress.emit(30, "Downloading assets.json...")
+            from .assets import download_assets_json
+            
+            assets_path = download_assets_json()
+            if assets_path:
+                print(f"✅ Downloaded assets.json to {assets_path}")
+            else:
+                print("⚠️ Failed to download assets.json, will create basic structure")
+        except Exception as e:
+            # Non-critical error, continue setup
+            print(f"⚠️ Warning: Could not download assets.json: {e}")
+    
+    def download_core_files(self):
+        """Download essential files and archive files"""
+        try:
+            self.progress.emit(50, "Downloading core files...")
             from src.core import download_needed_files
             download_needed_files()
+            
+            # Download archive files
+            self.progress.emit(60, "Downloading archive files...")
+            from .assets import download_archive_files
+            download_archive_files()
+            print("✅ Downloaded all archive files")
+            
         except Exception as e:
-            # If core download fails, continue - it's not critical for basic operation
-            print(f"Core files download warning: {e}")
+            # If download fails, continue - it's not critical for basic operation
+            print(f"Files download warning: {e}")
     
     def setup_configuration(self):
         """Set up initial configuration"""
-        self.progress.emit(65, "Setting up configuration...")
+        self.progress.emit(75, "Setting up configuration...")
         config_dir = Path.home() / "AppData" / "Local" / "CDBL"
         config_dir.mkdir(parents=True, exist_ok=True)
         
@@ -100,18 +126,18 @@ class FirstRunSetupWorker(QThread):
         else:
             print("Configuration file already exists, keeping existing settings")
         
-        # Create/update assets.json for sound swapper
+        # Always check and update assets.json for sound swapper (now after download)
         self.setup_assets_json()
     
     def setup_assets_json(self):
-        """Create or update assets.json with required structure in CDBL cache"""
+        """Create or update assets.json with required structure in CDBL cache - runs every launch"""
         from .assets import get_assets_cache_path
         
         # Use CDBL cache directory
         cache_dir = get_assets_cache_path()
         assets_file = Path(cache_dir) / "assets.json"
         
-        # Check if assets.json exists and update it to add skins
+        # Always ensure the assets.json structure exists and is up to date
         if assets_file.exists():
             try:
                 with open(assets_file, 'r') as f:
@@ -159,17 +185,48 @@ class FirstRunSetupWorker(QThread):
                         json.dump(assets_data, f, indent=4)
                     print(f"✅ Updated assets.json with skins in {cache_dir}")
                 else:
-                    print(f"ℹ️ assets.json already has skins structure")
+                    print(f"ℹ️ assets.json structure is up to date")
                     
             except Exception as e:
                 print(f"⚠️ Error updating assets.json: {e}")
+                # Create new assets.json if corrupted
+                self.create_new_assets_json(assets_file)
         else:
-            print(f"⚠️ assets.json not found in {cache_dir}. Download assets first.")
+            print(f"ℹ️ Creating new assets.json in {cache_dir}")
+            self.create_new_assets_json(assets_file)
+    
+    def create_new_assets_json(self, assets_file):
+        """Create a new assets.json file with basic structure"""
+        try:
+            # Create the cache directory if it doesn't exist
+            assets_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create basic structure
+            assets_data = {
+                "Rivals": {
+                    "gun sounds": {
+                        "skins": {
+                            "AR": {
+                                "AUG": "5bcb64d6269f4c20515e8b7e7cc53504",
+                                "Tommy Gun": "5bcb64d6269f4c20515e8b7e7cc53504",
+                                "AK47": "5bcb64d6269f4c20515e8b7e7cc53504"
+                            }
+                        }
+                    }
+                }
+            }
+            
+            with open(assets_file, 'w') as f:
+                json.dump(assets_data, f, indent=4)
+            print(f"✅ Created new assets.json with skins structure")
+            
+        except Exception as e:
+            print(f"⚠️ Error creating new assets.json: {e}")
     
     def setup_fastflags(self):
         """Initialize FastFlags system"""
         try:
-            self.progress.emit(85, "Setting up FastFlags...")
+            self.progress.emit(90, "Setting up FastFlags...")
             
             # Create initial backup of IxpSettings.json
             from src.fastflags import create_initial_backup
@@ -243,7 +300,9 @@ class FirstRunSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("CDBL - First Run Setup")
         self.setModal(True)
-        self.setFixedSize(500, 400)
+        self.resize(500, 400)  # Use resize instead of setFixedSize to allow flexibility
+        self.setMinimumSize(450, 350)  # Set minimum size
+        self.setMaximumSize(600, 500)  # Set maximum size to prevent it from getting too large
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         
         self.setup_worker = None
@@ -523,51 +582,50 @@ class FirstRunSetupDialog(QDialog):
             self.setFixedSize(500, 520)
     
     def restart_application(self):
-        """Restart the CDBL application, preserving admin privileges"""
+        """Restart the CDBL application, requesting admin privileges"""
         self.accept()
         
-        # Check if we're currently running as admin
-        from src.admin import is_admin
-        
-        if is_admin():
-            # We have admin privileges - restart with admin privileges preserved
-            try:
-                if getattr(sys, 'frozen', False):
-                    # Running as compiled executable
-                    exe_path = sys.executable
-                    # Use ShellExecute with "runas" to maintain admin privileges
-                    import ctypes
-                    ctypes.windll.shell32.ShellExecuteW(
-                        None,
-                        "runas",  # Request elevation (maintains current admin status)
-                        exe_path,
-                        "",  # No arguments
-                        os.getcwd(),
-                        1  # SW_SHOW
-                    )
-                else:
-                    # Running as Python script
-                    python_exe = sys.executable
-                    script_path = os.path.abspath(sys.argv[0])
-                    import ctypes
-                    ctypes.windll.shell32.ShellExecuteW(
-                        None,
-                        "runas",  # Request elevation (maintains current admin status)
-                        python_exe,
-                        f'"{script_path}"',
-                        os.getcwd(),
-                        1  # SW_SHOW
-                    )
-                print("🔄 Restarting with admin privileges...")
-                    
-            except Exception as e:
-                print(f"Failed to restart with admin privileges: {e}")
-                # Fallback to regular restart
-                self.restart_without_admin()
-                return
-        else:
-            # Not running as admin - regular restart
-            print("🔄 Restarting without admin privileges...")
+        # Always request admin privileges on restart to ensure proper functionality
+        try:
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable
+                exe_path = sys.executable
+                print(f"🔄 Restarting executable: {exe_path}")
+                # Use ShellExecute with "runas" to request admin privileges
+                import ctypes
+                result = ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",  # Always request elevation
+                    exe_path,
+                    "",  # No arguments
+                    None,  # Use None for working directory to let system decide
+                    1  # SW_SHOW
+                )
+                print(f"ShellExecute result: {result}")
+            else:
+                # Running as Python script
+                python_exe = sys.executable
+                script_path = os.path.abspath(sys.argv[0])
+                print(f"🔄 Restarting script: {python_exe} {script_path}")
+                import ctypes
+                result = ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",  # Always request elevation
+                    python_exe,
+                    f'"{script_path}"',
+                    None,  # Use None for working directory to let system decide
+                    1  # SW_SHOW
+                )
+                print(f"ShellExecute result: {result}")
+            
+            if result <= 32:  # ShellExecute returns > 32 on success
+                raise Exception(f"ShellExecute failed with code {result}")
+                
+            print("🔄 Restart request sent successfully!")
+                
+        except Exception as e:
+            print(f"Failed to restart with admin privileges: {e}")
+            # Fallback to regular restart
             self.restart_without_admin()
             return
         
@@ -910,6 +968,107 @@ def check_for_updates_on_startup():
         import traceback
         traceback.print_exc()
         return None
+
+
+def ensure_assets_json_structure():
+    """
+    Ensure assets.json structure exists on every launch
+    This function should be called every time CDBL starts
+    """
+    try:
+        from .assets import get_assets_cache_path
+        
+        # Use CDBL cache directory
+        cache_dir = get_assets_cache_path()
+        assets_file = Path(cache_dir) / "assets.json"
+        
+        # Always ensure the assets.json structure exists and is up to date
+        if assets_file.exists():
+            try:
+                with open(assets_file, 'r') as f:
+                    assets_data = json.load(f)
+                
+                updated = False
+                
+                # Ensure Rivals structure exists
+                if "Rivals" not in assets_data:
+                    assets_data["Rivals"] = {}
+                    updated = True
+                
+                # Ensure gun sounds exists
+                if "gun sounds" not in assets_data["Rivals"]:
+                    assets_data["Rivals"]["gun sounds"] = {}
+                    updated = True
+                
+                # Add skins structure if missing
+                if "skins" not in assets_data["Rivals"]["gun sounds"]:
+                    assets_data["Rivals"]["gun sounds"]["skins"] = {}
+                    updated = True
+                
+                # Add skin entries
+                skins_data = assets_data["Rivals"]["gun sounds"]["skins"]
+                
+                # Add AR category if missing
+                if "AR" not in skins_data:
+                    skins_data["AR"] = {}
+                    updated = True
+                
+                # Add individual skins
+                ar_skins = {
+                    "AUG": "5bcb64d6269f4c20515e8b7e7cc53504",
+                    "Tommy Gun": "5bcb64d6269f4c20515e8b7e7cc53504",
+                    "AK47": "5bcb64d6269f4c20515e8b7e7cc53504"
+                }
+                
+                for skin_name, skin_hash in ar_skins.items():
+                    if skin_name not in skins_data["AR"]:
+                        skins_data["AR"][skin_name] = skin_hash
+                        updated = True
+                
+                if updated:
+                    with open(assets_file, 'w') as f:
+                        json.dump(assets_data, f, indent=4)
+                    print(f"✅ Updated assets.json structure on launch")
+                
+            except Exception as e:
+                print(f"⚠️ Error updating assets.json: {e}")
+                # Create new assets.json if corrupted
+                create_new_assets_json_file(assets_file)
+        else:
+            print(f"ℹ️ Creating assets.json structure on launch")
+            create_new_assets_json_file(assets_file)
+            
+    except Exception as e:
+        print(f"⚠️ Error ensuring assets.json structure: {e}")
+
+
+def create_new_assets_json_file(assets_file):
+    """Helper function to create a new assets.json file with basic structure"""
+    try:
+        # Create the cache directory if it doesn't exist
+        assets_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create basic structure
+        assets_data = {
+            "Rivals": {
+                "gun sounds": {
+                    "skins": {
+                        "AR": {
+                            "AUG": "5bcb64d6269f4c20515e8b7e7cc53504",
+                            "Tommy Gun": "5bcb64d6269f4c20515e8b7e7cc53504",
+                            "AK47": "5bcb64d6269f4c20515e8b7e7cc53504"
+                        }
+                    }
+                }
+            }
+        }
+        
+        with open(assets_file, 'w') as f:
+            json.dump(assets_data, f, indent=4)
+        print(f"✅ Created new assets.json with required structure")
+        
+    except Exception as e:
+        print(f"⚠️ Error creating new assets.json: {e}")
 
 
 def remove_license_key():
