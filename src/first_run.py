@@ -56,7 +56,7 @@ class FirstRunSetupWorker(QThread):
             self.mark_setup_complete()
             
             self.progress.emit(100, "Setup complete!")
-            self.finished.emit(True, "CDBL setup completed successfully!\n\nThe application will now restart.")
+            self.finished.emit(True, "CDBL setup completed successfully!\n\nPlease restart CDBL as administrator for full functionality.")
             
         except Exception as e:
             self.finished.emit(False, f"Setup failed: {str(e)}")
@@ -384,9 +384,9 @@ class FirstRunSetupDialog(QDialog):
         self.start_btn.setEnabled(False)  # Disabled during countdown
         button_layout.addWidget(self.start_btn)
         
-        self.close_btn = QPushButton("Restart CDBL")
+        self.close_btn = QPushButton("Close CDBL")
         self.close_btn.setObjectName("primaryButton") 
-        self.close_btn.clicked.connect(self.restart_application)
+        self.close_btn.clicked.connect(self.close_application)
         self.close_btn.setVisible(False)
         button_layout.addWidget(self.close_btn)
         
@@ -552,19 +552,46 @@ class FirstRunSetupDialog(QDialog):
             self.status_label.setText("Setup completed successfully!")
             self.progress_bar.setValue(100)
             
-            # Show completion message
-            self.log_area.append(f"\n✅ {message}")
+            # Replace the welcome text with restart instructions
+            restart_instructions = (
+                "🎉 Setup Complete!\n\n"
+                "📋 IMPORTANT: Please restart CDBL with\n"
+                "administrator privileges:\n\n"
+                "1. Close this dialog\n"
+                "2. Right-click on CDBL and select\n"
+                "   'Run as administrator'\n"
+                "3. This ensures all features work properly\n\n"
+                "This dialog will close automatically\n"
+                "in 10 seconds..."
+            )
             
-            # Show restart button
+            # Find and update the welcome text label
+            for child in self.findChildren(QLabel):
+                if hasattr(child, 'objectName') and child.objectName() == "welcomeText":
+                    child.setText(restart_instructions)
+                    child.setAlignment(Qt.AlignLeft)  # Better alignment for instructions
+                    child.setWordWrap(True)  # Ensure word wrapping
+                    break
+            
+            # Resize dialog to accommodate the text better
+            self.resize(520, 450)
+            
+            # Show close button
             self.start_btn.setVisible(False)
             self.close_btn.setVisible(True)
             
-            # Auto-restart after 3 seconds
-            QTimer.singleShot(3000, self.restart_application)
+            # Auto-close after 10 seconds
+            QTimer.singleShot(10000, self.close_application)
             
         else:
             self.status_label.setText("Setup failed!")
             self.log_area.append(f"\n❌ {message}")
+            
+            # Make sure log area is visible to show the error
+            if not self.log_area.isVisible():
+                self.log_area.setVisible(True)
+                self.show_log_btn.setText("Hide Details")
+                self.resize(500, 520)  # Expand dialog to show log area
             
             # Re-enable start button for retry
             self.start_btn.setEnabled(True)
@@ -581,71 +608,10 @@ class FirstRunSetupDialog(QDialog):
             self.show_log_btn.setText("Hide Details")
             self.setFixedSize(500, 520)
     
-    def restart_application(self):
-        """Restart the CDBL application, requesting admin privileges"""
+    def close_application(self):
+        """Close the application"""
         self.accept()
-        
-        # Always request admin privileges on restart to ensure proper functionality
-        try:
-            if getattr(sys, 'frozen', False):
-                # Running as compiled executable
-                exe_path = sys.executable
-                print(f"🔄 Restarting executable: {exe_path}")
-                # Use ShellExecute with "runas" to request admin privileges
-                import ctypes
-                result = ctypes.windll.shell32.ShellExecuteW(
-                    None,
-                    "runas",  # Always request elevation
-                    exe_path,
-                    "",  # No arguments
-                    None,  # Use None for working directory to let system decide
-                    1  # SW_SHOW
-                )
-                print(f"ShellExecute result: {result}")
-            else:
-                # Running as Python script
-                python_exe = sys.executable
-                script_path = os.path.abspath(sys.argv[0])
-                print(f"🔄 Restarting script: {python_exe} {script_path}")
-                import ctypes
-                result = ctypes.windll.shell32.ShellExecuteW(
-                    None,
-                    "runas",  # Always request elevation
-                    python_exe,
-                    f'"{script_path}"',
-                    None,  # Use None for working directory to let system decide
-                    1  # SW_SHOW
-                )
-                print(f"ShellExecute result: {result}")
-            
-            if result <= 32:  # ShellExecute returns > 32 on success
-                raise Exception(f"ShellExecute failed with code {result}")
-                
-            print("🔄 Restart request sent successfully!")
-                
-        except Exception as e:
-            print(f"Failed to restart with admin privileges: {e}")
-            # Fallback to regular restart
-            self.restart_without_admin()
-            return
-        
-        # Exit current instance
         QApplication.quit()
-    
-    def restart_without_admin(self):
-        """Restart application without admin privileges (fallback)"""
-        try:
-            if getattr(sys, 'frozen', False):
-                # If running as compiled executable
-                exe_path = sys.executable
-                subprocess.Popen([exe_path], cwd=os.getcwd())
-            else:
-                # If running as Python script
-                python_exe = sys.executable
-                script_path = sys.argv[0]
-                subprocess.Popen([python_exe, script_path], cwd=os.getcwd())
-        except Exception as e:
-            print(f"Failed to restart application: {e}")
 
 
 def is_first_run():

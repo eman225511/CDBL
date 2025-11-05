@@ -131,9 +131,10 @@ class AudioWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, volume: float = 0.2):
         super().__init__()
         self.file_path = file_path
+        self.volume = volume  # Volume from 0.0 to 1.0
         self.should_stop = False
 
     def play(self):
@@ -141,6 +142,7 @@ class AudioWorker(QObject):
         try:
             if PYGAME_AVAILABLE:
                 sound = pygame.mixer.Sound(self.file_path)
+                sound.set_volume(self.volume)  # Set volume for this sound
                 sound.play()
                 while pygame.mixer.get_busy() and not self.should_stop:
                     pygame.time.wait(100)
@@ -884,7 +886,31 @@ class ModificationsTab(QWidget):
         
     def on_operation_finished(self, message):
         """Handle successful operation completion"""
-        QMessageBox.information(self, "Success", message)
+        # Check if this was a skybox operation
+        if hasattr(self, 'worker') and self.worker.operation == "apply_skybox":
+            # Show success message first
+            QMessageBox.information(self, "Success", message)
+            
+            # Then show skybox fix reminder
+            reply = QMessageBox.question(self, "Skybox Fix Recommended", 
+                "Skybox applied successfully!\n\n"
+                "For best results, it's recommended to apply the Skybox Fix from the Tools tab.\n\n"
+                "Would you like to go to the Tools tab now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # Switch to Tools tab (index 3) - access parent's tab_widget
+                parent = self.parent()
+                while parent is not None:
+                    if hasattr(parent, 'tab_widget'):
+                        parent.tab_widget.setCurrentIndex(3)
+                        break
+                    parent = parent.parent()
+        else:
+            # For non-skybox operations, just show the regular success message
+            QMessageBox.information(self, "Success", message)
+        
         self.apply_skybox_btn.setEnabled(True)
         self.apply_skybox_btn.setText("Apply Skybox")
         
@@ -1368,6 +1394,7 @@ class PremiumTab(QWidget):
         self.current_audio_worker = None
         self.current_audio_thread = None
         self.is_playing = False
+        self.preview_volume = 0.2  # Default quiet volume (20%)
         
         self.init_ui()
         
@@ -1439,7 +1466,7 @@ class PremiumTab(QWidget):
             "Enter your CDBL Premium license key to unlock exclusive features:\n\n"
             "• No Arms Modification\n"
             "• Exclusive Skyboxes (Coming Soon)\n"
-            "• Custom Sounds (Coming Soon)\n"
+            "• Custom Sounds\n"
             "• And More!\n\n"
             "Your license will be bound to this device."
         )
@@ -1593,6 +1620,7 @@ class PremiumTab(QWidget):
         
         # Category selector
         self.target_category_combo = QComboBox()
+        self.target_category_combo.setObjectName("comboBox")
         self.target_category_combo.addItems(['Default Gun Sounds', 'Hit Sounds', 'Skin Sounds'])
         self.target_category_combo.currentTextChanged.connect(self.on_target_category_changed)
         self.target_category_combo.setFixedHeight(32)
@@ -1638,9 +1666,36 @@ class PremiumTab(QWidget):
         """)
         target_layout.addWidget(self.target_sound_list)
         
+        # Add Restore Selected button
+        self.restore_selected_btn = QPushButton("Restore Selected")
+        self.restore_selected_btn.setFixedHeight(35)
+        self.restore_selected_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a90e2;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #5aa3f0;
+            }
+            QPushButton:pressed {
+                background-color: #3a7bc8;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.restore_selected_btn.clicked.connect(self.restore_selected_sound)
+        target_layout.addWidget(self.restore_selected_btn)
+        
         # Add spacer to match preview buttons height on the right side
         target_spacer = QWidget()
-        target_spacer.setFixedHeight(40)  # Match button height
+        target_spacer.setFixedHeight(5)  # Reduced height since we added button
         target_layout.addWidget(target_spacer)
         
         lists_layout.addLayout(target_layout, 1)
@@ -1657,6 +1712,7 @@ class PremiumTab(QWidget):
         
         # Category selector
         self.replacement_category_combo = QComboBox()
+        self.replacement_category_combo.setObjectName("comboBox")
         self.replacement_category_combo.addItems(['Gun Sounds', 'Hit Sounds', 'Kill Sounds'])
         self.replacement_category_combo.currentTextChanged.connect(self.on_replacement_category_changed)
         self.replacement_category_combo.setFixedHeight(32)
@@ -1721,6 +1777,30 @@ class PremiumTab(QWidget):
         self.stop_preview_btn.clicked.connect(self.stop_preview)
         buttons_layout.addWidget(self.stop_preview_btn)
         
+        buttons_layout.addSpacing(15)
+        
+        # Volume slider
+        volume_layout = QHBoxLayout()
+        volume_layout.setSpacing(5)
+        
+        volume_label = QLabel("🔊")
+        volume_label.setFixedWidth(20)
+        volume_layout.addWidget(volume_label)
+        
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(20)  # Default 20%
+        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.setToolTip("Preview Volume")
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
+        volume_layout.addWidget(self.volume_slider)
+        
+        self.volume_label = QLabel("20%")
+        self.volume_label.setFixedWidth(30)
+        self.volume_label.setObjectName("settingsDescription")
+        volume_layout.addWidget(self.volume_label)
+        
+        buttons_layout.addLayout(volume_layout)
         buttons_layout.addSpacing(15)
         
         self.swap_sound_btn = ModernButton("🔄 Swap Sounds")
@@ -2203,7 +2283,7 @@ class PremiumTab(QWidget):
                 self.stop_preview()
             
             self.current_audio_thread = QThread()
-            self.current_audio_worker = AudioWorker(file_path)
+            self.current_audio_worker = AudioWorker(file_path, self.preview_volume)
             self.current_audio_worker.moveToThread(self.current_audio_thread)
             
             # Connect signals
@@ -2248,6 +2328,11 @@ class PremiumTab(QWidget):
         self.is_playing = playing
         self.preview_replacement_btn.setEnabled(not playing)
         self.stop_preview_btn.setEnabled(playing)
+    
+    def on_volume_changed(self, value: int):
+        """Handle volume slider change"""
+        self.preview_volume = value / 100.0  # Convert to 0.0-1.0 range
+        self.volume_label.setText(f"{value}%")
     
     def cleanup_temp_files(self):
         """Clean up temporary audio files"""
@@ -2328,6 +2413,71 @@ class PremiumTab(QWidget):
         finally:
             self.swap_sound_btn.setEnabled(True)
             self.swap_sound_btn.setText("🔄 Swap Sounds")
+
+    def restore_selected_sound(self):
+        """Restore selected sound to original from archive"""
+        if not self.sound_swapper:
+            QMessageBox.warning(self, "Error", "Sound Swapper not initialized!")
+            return
+        
+        # Get selected target sound
+        target_item = self.target_sound_list.currentItem()
+        
+        if not target_item:
+            QMessageBox.warning(self, "Invalid Selection", 
+                "Please select a target sound from the list to restore.")
+            return
+        
+        target_sound = target_item.text()
+        
+        # Get internal category name
+        target_category_map = {
+            'Default Gun Sounds': 'default_gun_sounds',
+            'Hit Sounds': 'hitsounds',
+            'Skin Sounds': 'rivals_skin_sounds'
+        }
+        
+        target_category = target_category_map.get(self.target_category_combo.currentText(), '')
+        
+        if not target_category:
+            QMessageBox.warning(self, "Error", "Invalid category selection!")
+            return
+        
+        # Confirm restoration
+        reply = QMessageBox.question(self, "Restore Sound", 
+            f"Are you sure you want to restore '{target_sound}' to its original sound?\n\n"
+            f"This will replace any custom sound with the original from the archive.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Disable button during operation
+        self.restore_selected_btn.setEnabled(False)
+        self.restore_selected_btn.setText("Restoring...")
+        
+        try:
+            # Import and call the restore function from premium.py
+            from src.premium import restore_selected_sound
+            
+            result = restore_selected_sound(target_sound, target_category)
+            
+            if result["success"]:
+                QMessageBox.information(self, "Success", 
+                    f"Sound restoration completed successfully!\n\n"
+                    f"Restored: {target_sound}\n\n"
+                    f"{result['message']}\n\n"
+                    f"Changes will take effect the next time the sound plays in Roblox.")
+            else:
+                QMessageBox.warning(self, "Failed", f"Sound restoration failed:\n\n{result['message']}")
+                
+        except Exception as e:
+            error_msg = f"Error restoring sound: {str(e)}"
+            QMessageBox.critical(self, "Error", error_msg)
+        finally:
+            self.restore_selected_btn.setEnabled(True)
+            self.restore_selected_btn.setText("Restore Selected")
 
 
 class CustomTitleBar(QWidget):
@@ -2878,6 +3028,68 @@ class CDBlauncher(QMainWindow):
             font-weight: 400;
         }
         
+        /* Fallback styling for all QComboBox widgets */
+        QComboBox {
+            background: rgba(55, 65, 81, 0.8);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 400;
+            min-height: 18px;
+        }
+        
+        QComboBox:hover {
+            border-color: rgba(168, 85, 247, 0.5);
+            background: rgba(75, 85, 99, 0.8);
+        }
+        
+        QComboBox:focus {
+            border-color: #A855F7;
+        }
+        
+        QComboBox::drop-down {
+            border: none;
+            width: 18px;
+        }
+        
+        QComboBox::down-arrow {
+            image: none;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #A855F7;
+            margin-right: 6px;
+        }
+        
+        QComboBox QAbstractItemView {
+            background: rgba(30, 30, 30, 0.95);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+            border-radius: 6px;
+            selection-background-color: rgba(168, 85, 247, 0.3);
+            selection-color: #ffffff;
+            color: #ffffff;
+            padding: 4px;
+            font-weight: 400;
+        }
+        
+        QComboBox QAbstractItemView::item {
+            color: #ffffff;
+            background: transparent;
+            padding: 4px 8px;
+            border: none;
+        }
+        
+        QComboBox QAbstractItemView::item:selected {
+            background: rgba(168, 85, 247, 0.3);
+            color: #ffffff;
+        }
+        
+        QComboBox QAbstractItemView::item:hover {
+            background: rgba(168, 85, 247, 0.2);
+            color: #ffffff;
+        }
+        
         QSpinBox#spinBox, QDoubleSpinBox#spinBox {
             background: rgba(55, 65, 81, 0.8);
             border: 1px solid rgba(168, 85, 247, 0.3);
@@ -3104,6 +3316,54 @@ class CDBlauncher(QMainWindow):
             font-size: 11px;
             font-weight: 500;
             padding: 2px 0;
+        }
+        
+        /* Volume Slider */
+        QSlider:horizontal {
+            height: 20px;
+        }
+        
+        QSlider::groove:horizontal {
+            background: rgba(55, 65, 81, 0.8);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+            height: 6px;
+            border-radius: 3px;
+        }
+        
+        QSlider::handle:horizontal {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                                       stop: 0 #A855F7, 
+                                       stop: 1 #8B5CF6);
+            border: 1px solid rgba(168, 85, 247, 0.5);
+            width: 16px;
+            height: 16px;
+            margin: -6px 0;
+            border-radius: 8px;
+        }
+        
+        QSlider::handle:horizontal:hover {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                                       stop: 0 #C084FC, 
+                                       stop: 1 #A855F7);
+            border-color: rgba(168, 85, 247, 0.8);
+        }
+        
+        QSlider::handle:horizontal:pressed {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                                       stop: 0 #8B5CF6, 
+                                       stop: 1 #7C3AED);
+        }
+        
+        QSlider::sub-page:horizontal {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                       stop: 0 #8B5CF6, 
+                                       stop: 1 #A855F7);
+            border-radius: 3px;
+        }
+        
+        QSlider::add-page:horizontal {
+            background: rgba(55, 65, 81, 0.6);
+            border-radius: 3px;
         }
         """
         
