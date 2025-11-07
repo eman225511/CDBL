@@ -7,6 +7,8 @@ import hashlib
 import platform
 import uuid
 import requests
+import json
+from pathlib import Path
 from typing import Dict, Optional
 
 
@@ -256,3 +258,261 @@ def verify_license(api_url: str, license_key: str) -> Dict[str, any]:
     """
     egate = EGateKeySystem(api_url)
     return egate.verify_key(license_key)
+
+
+# ========== License Management Integration ==========
+
+# Configuration
+EGATE_API_URL = "https://key-sys-web.vercel.app/api"  # Replace with your actual EGate deployment URL
+
+def get_stored_license_key() -> Optional[str]:
+    """
+    Get the stored license key from config (compatible with existing system)
+    
+    Returns:
+        str or None: License key if exists, None otherwise
+    """
+    config_dir = Path.home() / "AppData" / "Local" / "CDBL"
+    config_file = config_dir / "config.json"
+    
+    if not config_file.exists():
+        return None
+    
+    try:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        return config.get("license_key", None)
+    except Exception as e:
+        print(f"Error reading license key: {e}")
+        return None
+
+def save_license_key(license_key: str) -> bool:
+    """
+    Save license key to config (compatible with existing system)
+    
+    Args:
+        license_key: The license key to save
+        
+    Returns:
+        bool: True if saved successfully, False otherwise
+    """
+    config_dir = Path.home() / "AppData" / "Local" / "CDBL"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    
+    # Load existing config or create new one
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+        except:
+            config = {
+                "version": "1.0.0",
+                "first_run_complete": False,
+                "settings": {
+                    "check_for_updates": True,
+                    "auto_detect_client": True
+                }
+            }
+    else:
+        config = {
+            "version": "1.0.0",
+            "first_run_complete": False,
+            "settings": {
+                "check_for_updates": True,
+                "auto_detect_client": True
+            }
+        }
+    
+    # Save the license key
+    config["license_key"] = license_key
+    
+    try:
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving license key: {e}")
+        return False
+
+def validate_stored_license() -> Dict[str, any]:
+    """
+    Validate the stored license key on startup using the same validation as activation
+    
+    Returns:
+        dict: Validation result with keys:
+            - success (bool): True if license is valid and premium access granted
+            - message (str): Status message
+            - premium_enabled (bool): True if premium features should be enabled
+            - error (str, optional): Error type if failed
+            - details (dict, optional): Additional validation information
+    """
+    result = {
+        "success": False,
+        "message": "",
+        "premium_enabled": False,
+        "error": None,
+        "details": {}
+    }
+    
+    try:
+        # Get stored license key
+        license_key = get_stored_license_key()
+        if not license_key:
+            result["error"] = "NO_LICENSE"
+            result["message"] = "No license key found. Premium features disabled."
+            return result
+        
+        print(f"🔍 Validating stored license key: {license_key[:8]}...")
+        
+        # Verify the license using the same validation as activation
+        egate = EGateKeySystem(EGATE_API_URL)
+        verification_result = egate.verify_key(license_key)
+        
+        if verification_result["success"]:
+            # License is valid - enable premium features
+            result["success"] = True
+            result["premium_enabled"] = True
+            result["message"] = f"✅ License verified successfully. Premium features enabled."
+            result["details"] = verification_result["details"]
+            
+            # Automatically set premium API key for skyboxes
+            try:
+                from .premium import set_premium_api_key, get_premium_api_key_value
+                premium_key = get_premium_api_key_value()
+                if premium_key:
+                    set_premium_api_key(premium_key)
+                    print(f"🔑 Premium API key automatically configured")
+                else:
+                    print(f"⚠️ Warning: Premium API key not available")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not set premium API key: {e}")
+            
+            print(f"🎉 Premium access granted for user: {verification_result['details'].get('email', 'Unknown')}")
+            
+        else:
+            # License validation failed
+            result["error"] = verification_result.get("error", "VALIDATION_FAILED")
+            result["message"] = f"❌ License validation failed: {verification_result['message']}"
+            result["details"] = verification_result.get("details", {})
+            
+            # Handle specific error cases
+            if verification_result.get("error") == "HWID_MISMATCH":
+                result["message"] += "\n💡 This license is bound to another device. Contact support to reset HWID."
+            elif verification_result.get("error") == "KEY_NOT_FOUND":
+                result["message"] += "\n💡 License key is invalid or expired."
+            elif verification_result.get("error") in ["CONNECTION_ERROR", "TIMEOUT"]:
+                result["message"] += "\n💡 Could not connect to license server. Premium features temporarily disabled."
+                # Don't mark as critical failure for connection issues
+                result["success"] = True  # Allow app to continue without premium
+                result["premium_enabled"] = False
+            
+            print(f"❌ License validation failed: {verification_result['message']}")
+        
+        return result
+        
+    except Exception as e:
+        result["error"] = "EXCEPTION"
+        result["message"] = f"Unexpected error during license validation: {str(e)}"
+        print(f"❌ License validation exception: {e}")
+        return result
+
+def activate_license(license_key: str) -> Dict[str, any]:
+    """
+    Activate a new license key (performs validation and saves if successful)
+    
+    Args:
+        license_key: License key to activate
+        
+    Returns:
+        dict: Activation result with same structure as validate_stored_license
+    """
+    result = {
+        "success": False,
+        "message": "",
+        "premium_enabled": False,
+        "error": None,
+        "details": {}
+    }
+    
+    try:
+        print(f"🔍 Activating license key: {license_key[:8]}...")
+        
+        # Verify the license using EGate system
+        egate = EGateKeySystem(EGATE_API_URL)
+        verification_result = egate.verify_key(license_key)
+        
+        if verification_result["success"]:
+            # License is valid - save it and enable premium features
+            if save_license_key(license_key):
+                result["success"] = True
+                result["premium_enabled"] = True
+                result["message"] = f"✅ License activated successfully! Premium features enabled."
+                result["details"] = verification_result["details"]
+                
+                # Automatically set premium API key for skyboxes
+                try:
+                    from .premium import set_premium_api_key, get_premium_api_key_value
+                    premium_key = get_premium_api_key_value()
+                    if premium_key:
+                        set_premium_api_key(premium_key)
+                        print(f"🔑 Premium API key automatically configured")
+                    else:
+                        print(f"⚠️ Warning: Premium API key not available")
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not set premium API key: {e}")
+                
+                print(f"🎉 License activated for user: {verification_result['details'].get('email', 'Unknown')}")
+            else:
+                result["error"] = "SAVE_FAILED"
+                result["message"] = "License is valid but could not be saved to config."
+        else:
+            # License activation failed
+            result["error"] = verification_result.get("error", "ACTIVATION_FAILED")
+            result["message"] = f"❌ License activation failed: {verification_result['message']}"
+            result["details"] = verification_result.get("details", {})
+            
+            print(f"❌ License activation failed: {verification_result['message']}")
+        
+        return result
+        
+    except Exception as e:
+        result["error"] = "EXCEPTION"
+        result["message"] = f"Unexpected error during license activation: {str(e)}"
+        print(f"❌ License activation exception: {e}")
+        return result
+
+def check_premium_status() -> bool:
+    """
+    Quick check if premium features are currently available
+    
+    Returns:
+        bool: True if premium features are enabled
+    """
+    try:
+        from .premium import has_premium_access
+        return has_premium_access()
+    except:
+        return False
+
+def startup_license_validation() -> Dict[str, any]:
+    """
+    Perform license validation on application startup
+    This function should be called every time the application launches
+    
+    Returns:
+        dict: Startup validation result
+    """
+    print("🚀 Starting CDBL license validation...")
+    
+    validation_result = validate_stored_license()
+    
+    if validation_result["success"]:
+        if validation_result["premium_enabled"]:
+            print("✅ Startup validation successful - Premium features available")
+        else:
+            print("⚠️ Startup validation - Running in free mode (connection issue)")
+    else:
+        print(f"❌ Startup validation failed - {validation_result['message']}")
+    
+    return validation_result

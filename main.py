@@ -57,13 +57,14 @@ atexit.register(cleanup_temp_dirs)
 # Import our modules
 from src.launcher import detect_roblox_clients, launch_roblox, kill_roblox, install_roblox, install_bloxstrap, install_fishstrap
 from src.settings import change_settings
-from src.skybox import make_skyname_list, get_sky_preview, apply_skybox, apply_default_sky, download_sky
+from src.skybox import make_skyname_list, get_sky_preview, apply_skybox, apply_default_sky, download_sky, get_premium_skyboxes_from_api, get_premium_api_status
 from src.textures import apply_dark_textures, apply_light_textures, apply_default_textures
 from src.core import download_needed_files
 from src.fastflags import apply_fastflags, remove_fastflags
 from src.assets import download_and_prepare_assets, apply_skybox_fix, get_cache_info
 from src.first_run import show_first_run_setup, is_first_run, get_license_key, save_license_key, remove_license_key, check_for_updates_on_startup
 from src.admin import is_admin, check_admin_with_dialog, check_and_display_admin_status
+from src.keysys import startup_license_validation, check_premium_status
 
 
 class SkyboxDownloadWorker(QThread):
@@ -90,6 +91,144 @@ class SkyboxDownloadWorker(QThread):
                 self.error.emit(f"Failed to download {self.sky_name}")
         except Exception as e:
             self.error.emit(f"Error downloading {self.sky_name}: {str(e)}")
+
+
+class LoadingWorker(QThread):
+    """Worker thread for loading skybox list"""
+    skyboxes_loaded = Signal(list, list)  # all_skyboxes, popular_skyboxes
+    loading_failed = Signal(str)  # error_message
+    api_status_updated = Signal(dict)  # API status information
+    
+    def __init__(self, force_local=False, premium_mode=False):
+        super().__init__()
+        self.force_local = force_local
+        self.premium_mode = premium_mode
+        
+    def run(self):
+        try:
+            # Check API status first (unless in local mode)
+            if not self.force_local:
+                try:
+                    from src.skybox import get_api_status, get_premium_api_status
+                    
+                    if self.premium_mode:
+                        # Check premium API status
+                        api_status = get_premium_api_status()
+                        print(f"🔍 Premium API Status: {api_status}")
+                        self.api_status_updated.emit(api_status)
+                    else:
+                        # Check regular API status
+                        api_status = get_api_status()
+                        print(f"🔍 API Status: {api_status}")
+                        self.api_status_updated.emit(api_status)
+                except Exception as e:
+                    print(f"⚠️ Could not check API status: {e}")
+            
+            if self.premium_mode:
+                # Load premium skyboxes
+                from src.skybox import get_popular_premium_skyboxes_api
+                skyboxes = []
+                popular_skyboxes = []
+                
+                try:
+                    # Get premium skyboxes
+                    premium_skyboxes = get_premium_skyboxes_from_api()
+                    if premium_skyboxes:
+                        skyboxes = [skybox.get('sky_name', '').replace(" ", "") for skybox in premium_skyboxes if skybox.get('sky_name')]
+                        print(f"🆕 Loaded {len(skyboxes)} premium skyboxes from API")
+                    else:
+                        skyboxes = []
+                        print("📝 No premium skyboxes available")
+                    
+                    # Get popular premium skyboxes
+                    try:
+                        popular_skyboxes = get_popular_premium_skyboxes_api()
+                        if popular_skyboxes:
+                            popular_skyboxes = [item['sky_name'].replace(" ", "") for item in popular_skyboxes if isinstance(item, dict) and 'sky_name' in item]
+                        else:
+                            popular_skyboxes = []
+                    except Exception as e:
+                        print(f"Could not load popular premium skyboxes: {e}")
+                        popular_skyboxes = []
+                        
+                except Exception as e:
+                    print(f"Failed to load premium skyboxes: {e}")
+                    skyboxes = []
+                    popular_skyboxes = []
+                    
+            else:
+                # Load regular skyboxes
+                from src.skybox import get_popular_skyboxes
+                skyboxes = make_skyname_list(force_local=self.force_local)
+                popular_skyboxes = []
+                
+                # Only try to get popular skyboxes if not in local mode
+                if not self.force_local:
+                    try:
+                        popular_skyboxes = get_popular_skyboxes(20)  # Get top 20 popular
+                        if not popular_skyboxes:
+                            popular_skyboxes = []
+                    except Exception as e:
+                        print(f"Could not load popular skyboxes: {e}")
+                        popular_skyboxes = []
+            
+            self.skyboxes_loaded.emit(skyboxes, popular_skyboxes)
+        except Exception as e:
+            self.loading_failed.emit(str(e))
+
+class PreviewWorker(QThread):
+    """Worker thread for loading skybox previews"""
+    preview_loaded = Signal(str, str)  # preview_path, skybox_name
+    preview_failed = Signal(str, str)  # error_message, skybox_name
+    
+    def __init__(self, skybox_name, force_local=False, is_premium=False):
+        super().__init__()
+        self.skybox_name = skybox_name
+        self.force_local = force_local
+        self.is_premium = is_premium
+        
+    def run(self):
+        try:
+            from src.skybox import get_sky_preview
+            preview_path = get_sky_preview(self.skybox_name, force_local=self.force_local, is_premium=self.is_premium)
+            if preview_path and os.path.exists(preview_path):
+                self.preview_loaded.emit(preview_path, self.skybox_name)
+            else:
+                self.preview_failed.emit(f"Preview not available for {self.skybox_name}", self.skybox_name)
+        except Exception as e:
+            self.preview_failed.emit(f"Error loading preview: {str(e)}", self.skybox_name)
+
+
+class LicenseWorker(QThread):
+    """Worker thread for license activation/verification"""
+    license_verified = Signal(dict)  # result dictionary
+    license_failed = Signal(str)  # error_message
+    
+    def __init__(self, license_key, operation='activate'):
+        super().__init__()
+        self.license_key = license_key
+        self.operation = operation
+        
+    def run(self):
+        try:
+            from src.keysys import activate_license, validate_stored_license
+            
+            if self.operation == 'activate':
+                result = activate_license(self.license_key)
+                # Add the license key to the result for later use
+                if result['success']:
+                    result['license_key'] = self.license_key
+            elif self.operation == 'validate':
+                result = validate_stored_license()
+            else:
+                result = {'success': False, 'message': 'Unknown operation'}
+            
+            if result['success']:
+                self.license_verified.emit(result)
+            else:
+                self.license_failed.emit(result.get('message', 'License verification failed'))
+        except Exception as e:
+            self.license_failed.emit(f"Error: {str(e)}")
 
 
 class WorkerThread(QThread):
@@ -536,9 +675,75 @@ class ModificationsTab(QWidget):
     def __init__(self):
         super().__init__()
         self.current_client = "Roblox"
+        self.all_skyboxes = []  # Initialize empty skybox list
+        self.popular_skyboxes = []  # Initialize empty popular skyboxes list
         self.init_ui()
-        self.load_skybox_list()
         
+        # Defer skybox list loading to improve startup time
+        QTimer.singleShot(100, self.load_skybox_list)  # Load after 100ms
+        
+        # Initialize premium toggle state based on user access
+        QTimer.singleShot(1500, self.initialize_premium_toggle)  # Wait longer for license validation
+        
+        # Setup API status update timer
+        self.api_status_timer = QTimer()
+        self.api_status_timer.timeout.connect(self.update_api_status)
+        self.api_status_timer.start(30000)  # Update every 30 seconds
+        
+    def initialize_premium_toggle(self):
+        """Initialize premium toggle state based on user access"""
+        try:
+            from src.keysys import check_premium_status
+            
+            has_premium = check_premium_status()
+            if has_premium:
+                self.premium_mode_toggle.setEnabled(True)
+                self.premium_mode_toggle.setToolTip("Switch between regular and premium skyboxes")
+                print("💎 Premium toggle enabled - User has premium access")
+            else:
+                self.premium_mode_toggle.setEnabled(False)
+                self.premium_mode_toggle.setChecked(False)  # Ensure it's not checked
+                self.premium_mode_toggle.setToolTip("Premium skyboxes require a valid license. Activate your license in the Premium tab.")
+                print("🔒 Premium toggle disabled - User needs premium access")
+                
+        except Exception as e:
+            print(f"⚠️ Error initializing premium toggle: {e}")
+            # Default to disabled for safety
+            self.premium_mode_toggle.setEnabled(False)
+            self.premium_mode_toggle.setChecked(False)
+    
+    def refresh_premium_toggle(self, refresh_skyboxes=True):
+        """Refresh premium toggle state - called after license activation/deactivation"""
+        try:
+            from src.keysys import check_premium_status
+            
+            has_premium = check_premium_status()
+            if has_premium:
+                self.premium_mode_toggle.setEnabled(True)
+                self.premium_mode_toggle.setToolTip("Switch between regular and premium skyboxes")
+                print("💎 Premium toggle refreshed - Premium access granted")
+                
+                # Refresh skybox list to show premium content
+                if refresh_skyboxes:
+                    print("🔄 Refreshing skybox list to show premium content...")
+                    self.load_skybox_list()
+            else:
+                self.premium_mode_toggle.setEnabled(False)
+                self.premium_mode_toggle.setChecked(False)  # Ensure it's not checked
+                self.premium_mode_toggle.setToolTip("Premium skyboxes require a valid license. Activate your license in the Premium tab.")
+                print("🔒 Premium toggle refreshed - Premium access revoked")
+                
+                # Refresh skybox list to remove premium content
+                if refresh_skyboxes:
+                    print("🔄 Refreshing skybox list to remove premium content...")
+                    self.load_skybox_list()
+                
+        except Exception as e:
+            print(f"⚠️ Error refreshing premium toggle: {e}")
+            # Default to disabled for safety
+            self.premium_mode_toggle.setEnabled(False)
+            self.premium_mode_toggle.setChecked(False)
+    
     def init_ui(self):
         layout = QVBoxLayout()
         layout.setSpacing(24)
@@ -575,6 +780,102 @@ class ModificationsTab(QWidget):
         skybox_layout.setSpacing(12)
         skybox_layout.setContentsMargins(16, 24, 16, 16)
         
+        # Source toggle switch
+        source_layout = QHBoxLayout()
+        source_layout.setSpacing(8)
+        
+        source_label = QLabel("Source:")
+        source_label.setObjectName("controlLabel")
+        source_layout.addWidget(source_label)
+        
+        self.api_mode_toggle = QPushButton("🌐 New API")
+        self.api_mode_toggle.setCheckable(True)
+        self.api_mode_toggle.setChecked(True)  # Default to New API mode
+        self.api_mode_toggle.setFixedHeight(28)
+        self.api_mode_toggle.setObjectName("toggleButton")
+        self.api_mode_toggle.clicked.connect(self.toggle_source_mode)
+        self.api_mode_toggle.setStyleSheet("""
+            QPushButton#toggleButton {
+                font-size: 11px;
+                font-weight: 500;
+                padding: 4px 12px;
+                border-radius: 14px;
+                border: 1px solid #4F46E5;
+                background-color: #4F46E5;
+                color: white;
+            }
+            QPushButton#toggleButton:checked {
+                background-color: #4F46E5;
+                color: white;
+            }
+            QPushButton#toggleButton:!checked {
+                background-color: transparent;
+                color: #9CA3AF;
+                border: 1px solid #6B7280;
+            }
+            QPushButton#toggleButton:hover {
+                background-color: #4338CA;
+            }
+        """)
+        source_layout.addWidget(self.api_mode_toggle)
+        
+        # Premium skybox toggle
+        self.premium_mode_toggle = QPushButton("💎 Premium")
+        self.premium_mode_toggle.setCheckable(True)
+        self.premium_mode_toggle.setChecked(False)  # Default to regular skyboxes
+        self.premium_mode_toggle.setFixedHeight(28)
+        self.premium_mode_toggle.setObjectName("premiumToggleButton")
+        self.premium_mode_toggle.clicked.connect(self.toggle_premium_mode)
+        self.premium_mode_toggle.setStyleSheet("""
+            QPushButton#premiumToggleButton {
+                font-size: 11px;
+                font-weight: 500;
+                padding: 4px 12px;
+                border-radius: 14px;
+                border: 1px solid #9333EA;
+                background-color: transparent;
+                color: #9333EA;
+            }
+            QPushButton#premiumToggleButton:checked {
+                background-color: #9333EA;
+                color: white;
+                border: 1px solid #9333EA;
+            }
+            QPushButton#premiumToggleButton:!checked {
+                background-color: transparent;
+                color: #9333EA;
+                border: 1px solid #9333EA;
+            }
+            QPushButton#premiumToggleButton:hover {
+                background-color: #7C3AED;
+                color: white;
+            }
+            QPushButton#premiumToggleButton:disabled {
+                background-color: transparent;
+                color: #6B7280;
+                border: 1px solid #6B7280;
+            }
+        """)
+        source_layout.addWidget(self.premium_mode_toggle)
+        
+        source_layout.addStretch()
+        skybox_layout.addLayout(source_layout)
+        
+        # API Status indicator
+        self.api_status_label = QLabel("🔄 Checking API...")
+        self.api_status_label.setObjectName("apiStatusLabel")
+        self.api_status_label.setStyleSheet("""
+            QLabel#apiStatusLabel {
+                font-size: 12px;
+                font-weight: 500;
+                padding: 4px 8px;
+                border-radius: 4px;
+                background-color: rgba(156, 163, 175, 0.1);
+                color: #9CA3AF;
+            }
+        """)
+        skybox_layout.addWidget(self.api_status_label)
+        
         # Search bar for skybox filtering
         search_label = QLabel("Search Skyboxes:")
         search_label.setObjectName("controlLabel")
@@ -595,14 +896,10 @@ class ModificationsTab(QWidget):
         self.skybox_list.setObjectName("listWidget")
         self.skybox_list.itemClicked.connect(self.on_skybox_selected)
         self.skybox_list.setMinimumHeight(300)
-        skybox_layout.addWidget(self.skybox_list)
-        
-        # Custom skybox button
-        self.custom_skybox_btn = ModernButton("Load Custom Skybox")
-        self.custom_skybox_btn.setObjectName("secondaryButton")
-        self.custom_skybox_btn.clicked.connect(self.load_custom_skybox)
-        skybox_layout.addWidget(self.custom_skybox_btn)
-        
+        self.skybox_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.skybox_list.addItem("🔄 Loading skyboxes...")  # Initial loading indicator
+        skybox_layout.addWidget(self.skybox_list, 1)  # Give it stretch factor of 1
+
         skybox_group.setLayout(skybox_layout)
         content_layout.addWidget(skybox_group, 1)
         
@@ -664,7 +961,7 @@ class ModificationsTab(QWidget):
         preview_layout.addLayout(skybox_controls)
         
         # Texture controls
-        texture_group = QGroupBox("Textures")
+        texture_group = QGroupBox("Textures and Skyboxes")
         texture_group.setObjectName("groupBox")
         texture_layout = QVBoxLayout()
         texture_layout.setSpacing(12)
@@ -682,12 +979,19 @@ class ModificationsTab(QWidget):
         self.light_texture_btn.clicked.connect(lambda: self.apply_texture(apply_light_textures))
         texture_controls.addWidget(self.light_texture_btn)
         
-        self.default_texture_btn = ModernButton("Default (include sky)")
+        self.default_texture_btn = ModernButton("Full restore")
         self.default_texture_btn.setObjectName("secondaryButton")
         self.default_texture_btn.clicked.connect(lambda: self.apply_texture(apply_default_textures))
         texture_controls.addWidget(self.default_texture_btn)
         
         texture_layout.addLayout(texture_controls)
+        
+        # Custom skybox button - moved under texture buttons
+        self.custom_skybox_btn = ModernButton("Load Custom Skybox")
+        self.custom_skybox_btn.setObjectName("secondaryButton")
+        self.custom_skybox_btn.clicked.connect(self.load_custom_skybox)
+        texture_layout.addWidget(self.custom_skybox_btn)
+        
         texture_group.setLayout(texture_layout)
         
         preview_layout.addWidget(texture_group)
@@ -702,18 +1006,106 @@ class ModificationsTab(QWidget):
         self.current_client = self.client_combo.currentText()
         
     def load_skybox_list(self):
-        """Load available skyboxes"""
+        """Load available skyboxes using worker thread"""
+        # Check if we should use New API mode (toggle checked = New API mode)
+        is_new_api_mode = hasattr(self, 'api_mode_toggle') and self.api_mode_toggle.isChecked()
+        force_local = not is_new_api_mode  # Use old API if not in new API mode
+        
+        # Check if we should use Premium mode (toggle checked = Premium mode)
+        is_premium_mode = hasattr(self, 'premium_mode_toggle') and self.premium_mode_toggle.isChecked()
+        
+        # Cancel any existing loading worker
+        if hasattr(self, 'loading_worker') and self.loading_worker.isRunning():
+            self.loading_worker.terminate()
+            self.loading_worker.wait()
+        
+        # Start new loading worker
+        self.loading_worker = LoadingWorker(force_local, is_premium_mode)
+        self.loading_worker.skyboxes_loaded.connect(self.on_skyboxes_loaded)
+        self.loading_worker.loading_failed.connect(self.on_loading_failed)
+        self.loading_worker.api_status_updated.connect(self.on_api_status_updated)
+        self.loading_worker.start()
+    
+    def on_skyboxes_loaded(self, skyboxes, popular_skyboxes):
+        """Handle successful skybox loading"""
         try:
-            skyboxes = make_skyname_list()
-            self.all_skyboxes = sorted(skyboxes)  # Store all skyboxes for filtering
+            self.popular_skyboxes = popular_skyboxes  # Store popular skyboxes list
+            
+            # Debug: Print popular skyboxes
+            if popular_skyboxes:
+                print(f"🔥 Popular skyboxes loaded: {popular_skyboxes}")
+            else:
+                print("📝 No popular skyboxes found")
+            
+            # Check if we should use New API mode for ordering
+            is_new_api_mode = hasattr(self, 'api_mode_toggle') and self.api_mode_toggle.isChecked()
+            
+            if is_new_api_mode and popular_skyboxes:
+                # Put popular skyboxes first, then the rest
+                remaining_skyboxes = [s for s in skyboxes if s not in popular_skyboxes]
+                self.all_skyboxes = popular_skyboxes + sorted(remaining_skyboxes)
+                print(f"📈 Prioritized {len(popular_skyboxes)} popular skyboxes")
+            else:
+                # In Old API mode or no popular skyboxes, just sort alphabetically
+                self.all_skyboxes = sorted(skyboxes)
+            
             self.update_skybox_display()
+            self.update_api_status()  # Update API status after loading
+            
+            # Debug: Print skybox count
+            print(f"📊 Loaded {len(self.all_skyboxes)} total skyboxes")
+            
         except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Could not load skybox list: {str(e)}")
-            self.all_skyboxes = []
+            print(f"Error processing loaded skyboxes: {e}")
+            self.on_loading_failed(str(e))
+    
+    def on_loading_failed(self, error_message):
+        """Handle failed skybox loading"""
+        QMessageBox.warning(self, "Warning", f"Could not load skybox list: {error_message}")
+        self.all_skyboxes = []
+        self.popular_skyboxes = []  # Ensure no popular skyboxes when loading fails
+        self.update_skybox_display()
+        self.update_api_status()  # Update status even on error
+    
+    def on_api_status_updated(self, status):
+        """Handle API status update from worker thread"""
+        try:
+            # Store the API status
+            self.cached_api_status = status
+            
+            # Update the UI with API status
+            if hasattr(self, 'api_status_label'):
+                if status.get('available'):
+                    if status.get('premium_skybox_count') is not None:
+                        # Premium API status
+                        count = status.get('premium_skybox_count', 0)
+                        self.api_status_label.setText(f"✅ Premium API: {count} skyboxes available")
+                        self.api_status_label.setStyleSheet("color: #9333EA;")
+                    else:
+                        # Regular API status
+                        count = status.get('skybox_count', 0)
+                        response_time = status.get('response_time', 0)
+                        self.api_status_label.setText(f"✅ API: {count} skyboxes ({response_time}ms)")
+                        self.api_status_label.setStyleSheet("color: #10b981;")
+                else:
+                    message = status.get('message', 'Unavailable')
+                    self.api_status_label.setText(f"❌ API: {message}")
+                    self.api_status_label.setStyleSheet("color: #ef4444;")
+                    
+            print(f"📊 API Status updated: {status}")
+        except Exception as e:
+            print(f"⚠️ Error updating API status UI: {e}")
             
     def update_skybox_display(self):
         """Update the skybox list display based on current filter"""
         self.skybox_list.clear()
+        
+        # Safety check: ensure all_skyboxes is initialized
+        if not hasattr(self, 'all_skyboxes') or not self.all_skyboxes:
+            print("⚠️ Warning: all_skyboxes is empty or not initialized")
+            if hasattr(self, 'skybox_count_label'):
+                self.skybox_count_label.setText("No skyboxes loaded")
+            return
         
         # Get current search text
         search_text = getattr(self, 'skybox_search', None)
@@ -728,36 +1120,251 @@ class ModificationsTab(QWidget):
         else:
             filtered_skyboxes = self.all_skyboxes
         
-        # Add filtered skyboxes to list
+        # Add filtered skyboxes to list with popularity indicators
         for skybox in filtered_skyboxes:
-            self.skybox_list.addItem(skybox)
+            # Check if this skybox is popular
+            if hasattr(self, 'popular_skyboxes') and self.popular_skyboxes and skybox in self.popular_skyboxes:
+                display_name = f"🔥 {skybox}"  # Popular indicator
+            else:
+                display_name = skybox
+            
+            self.skybox_list.addItem(display_name)
             
         # Update count label if we have one
-        count_text = f"Showing {len(filtered_skyboxes)} of {len(self.all_skyboxes)} skyboxes"
+        is_premium_mode = hasattr(self, 'premium_mode_toggle') and self.premium_mode_toggle.isChecked()
+        
+        if is_premium_mode and len(self.all_skyboxes) == 0:
+            # Special case for premium mode with no skyboxes
+            count_text = "No premium skys yet"
+        else:
+            count_text = f"Showing {len(filtered_skyboxes)} of {len(self.all_skyboxes)} skyboxes"
+        
         if hasattr(self, 'skybox_count_label'):
+            print(f"🔢 Updating count: {count_text}")  # Debug output
             self.skybox_count_label.setText(count_text)
             
     def filter_skybox_list(self):
-        """Filter skybox list based on search text"""
+        """Filter skybox list based on search text - uses API search when available"""
+        search_text = self.skybox_search.text().strip()
+        
+        if len(search_text) >= 2:  # Use API search for queries of 2+ characters
+            try:
+                from src.skybox import search_skyboxes
+                # Use API search which falls back to local search
+                filtered_skyboxes = search_skyboxes(search_text, limit=100)
+                
+                # Update the display
+                self.skybox_list.clear()
+                for skybox in filtered_skyboxes:
+                    # Check if this skybox is popular and add indicator
+                    if hasattr(self, 'popular_skyboxes') and skybox in self.popular_skyboxes:
+                        display_name = f"🔥 {skybox}"
+                    else:
+                        display_name = skybox
+                    self.skybox_list.addItem(display_name)
+                
+                # Update count
+                count_text = f"Showing {len(filtered_skyboxes)} results for '{search_text}'"
+                if hasattr(self, 'skybox_count_label'):
+                    self.skybox_count_label.setText(count_text)
+                
+                return
+            except Exception as e:
+                print(f"Search failed, falling back to local filter: {e}")
+        
+        # Fallback to original local filtering
         self.update_skybox_display()
+    
+    def update_api_status(self):
+        """Update the API status indicator"""
+        try:
+            from src.skybox import get_api_status
+            api_status = get_api_status()
+            
+            print(f"🔍 API Status: {api_status}")  # Debug output
+            
+            # Get our actual loaded count regardless of API status
+            loaded_count = len(getattr(self, 'all_skyboxes', []))
+            
+            if api_status["available"]:
+                # Show our loaded count instead of API count to avoid premium issues
+                if loaded_count > 0:
+                    status_text = f"🌐 API Connected • {loaded_count} skyboxes loaded • {api_status['response_time']}ms"
+                else:
+                    status_text = f"🌐 API Connected • {api_status['response_time']}ms"
+                status_color = "#10B981"  # Green
+            else:
+                # Show how many skyboxes we actually have loaded when API is offline
+                if loaded_count > 0:
+                    status_text = f"🔴 API Offline • {loaded_count} local skyboxes loaded"
+                else:
+                    status_text = "🔴 API Offline • Using local files"
+                status_color = "#EF4444"  # Red
+            
+            self.api_status_label.setText(status_text)
+            self.api_status_label.setStyleSheet(f"""
+                QLabel#apiStatusLabel {{
+                    font-size: 12px;
+                    font-weight: 500;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: {status_color};
+                    border: 1px solid {status_color}40;
+                }}
+            """)
+            
+        except Exception as e:
+            print(f"Failed to update API status: {e}")
+            self.api_status_label.setText("⚠️ API Status Unknown")
+            self.api_status_label.setStyleSheet("""
+                QLabel#apiStatusLabel {
+                    font-size: 12px;
+                    font-weight: 500;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #F59E0B;
+                    border: 1px solid #F59E0B40;
+                }
+            """)
+    
+    def toggle_source_mode(self):
+        """Toggle between New API and Old API mode"""
+        is_new_api_mode = self.api_mode_toggle.isChecked()
+        
+        if is_new_api_mode:
+            self.api_mode_toggle.setText("🌐 New API")
+            print("Switched to New API mode")
+        else:
+            self.api_mode_toggle.setText("💻 Old API")
+            print("Switched to Old API mode")
+            
+            # Check if old API files exist, if not offer to download
+            try:
+                from src.skybox import cdbl_skybox_data_path
+                import os
+                sky_list_file = os.path.join(cdbl_skybox_data_path, 'Sky-list.txt')
+                
+                if not os.path.exists(sky_list_file):
+                    reply = QMessageBox.question(self, "Download Old API Files",
+                        "Old API skybox files not found. Would you like to download them now?\n\n"
+                        "This will download the Sky-list.txt file and preview images for offline use.",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes)
+                    
+                    if reply == QMessageBox.StandardButton.Yes:
+                        self.download_old_api_files()
+                        return
+                    else:
+                        # Switch back to New API mode if user cancels
+                        self.api_mode_toggle.setChecked(True)
+                        self.api_mode_toggle.setText("🌐 New API")
+                        return
+            except Exception as e:
+                print(f"Error checking old API files: {e}")
+        
+        # Reload skybox list with new mode
+        self.load_skybox_list()
+    
+    def toggle_premium_mode(self):
+        """Toggle between regular and premium skyboxes"""
+        is_premium_mode = self.premium_mode_toggle.isChecked()
+        
+        if is_premium_mode:
+            # Check if user has premium access
+            from src.keysys import check_premium_status
+            if not check_premium_status():
+                # User doesn't have premium access, revert toggle
+                self.premium_mode_toggle.setChecked(False)
+                QMessageBox.warning(self, "Premium Access Required",
+                    "Premium skyboxes require a valid license.\n\n"
+                    "Please activate your premium license in the Premium tab to access exclusive skyboxes.",
+                    QMessageBox.StandardButton.Ok)
+                return
+            
+            self.premium_mode_toggle.setText("💎 Premium")
+            print("Switched to Premium skyboxes mode")
+            
+            # Check premium API status
+            premium_status = get_premium_api_status()
+            if not premium_status["available"]:
+                QMessageBox.warning(self, "Premium API Unavailable",
+                    f"Premium skyboxes are currently unavailable:\n{premium_status['message']}\n\n"
+                    "Falling back to regular skyboxes.",
+                    QMessageBox.StandardButton.Ok)
+                self.premium_mode_toggle.setChecked(False)
+                self.premium_mode_toggle.setText("💎 Premium")
+                return
+                
+        else:
+            self.premium_mode_toggle.setText("💎 Premium")
+            print("Switched to Regular skyboxes mode")
+        
+        # Reload skybox list with new mode
+        self.load_skybox_list()
+    
+    def download_old_api_files(self):
+        """Download old API skybox files for offline use"""
+        try:
+            QMessageBox.information(self, "Download Started",
+                "Downloading old API skybox files in the background.\n"
+                "This may take a few minutes...")
+            
+            # TODO: Implement actual download of Sky-list.txt and preview files
+            # For now, just show a placeholder
+            print("TODO: Download old API skybox files")
+            
+            # Reload list after download
+            self.load_skybox_list()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", 
+                f"Failed to download old API files:\n{str(e)}")
+            # Switch back to New API mode on error
+            self.api_mode_toggle.setChecked(True)
+            self.api_mode_toggle.setText("🌐 New API")
             
     def on_skybox_selected(self, item):
         """Handle skybox selection"""
-        skybox_name = item.text()
+        display_name = item.text()
+        # Strip popularity indicator if present
+        skybox_name = display_name.replace("🔥 ", "")
+        
+        # Show loading message immediately
+        self.preview_label.setText(f"Loading preview for {skybox_name}...")
+        
+        # Cancel any existing preview worker
+        if hasattr(self, 'preview_worker') and self.preview_worker.isRunning():
+            self.preview_worker.terminate()
+            self.preview_worker.wait()
+        
+        # Start new preview worker
+        # Check if we're in Old API mode to force local previews
+        is_old_api_mode = hasattr(self, 'api_mode_toggle') and not self.api_mode_toggle.isChecked()
+        # Check if we're in Premium mode
+        is_premium_mode = hasattr(self, 'premium_mode_toggle') and self.premium_mode_toggle.isChecked()
+        self.preview_worker = PreviewWorker(skybox_name, force_local=is_old_api_mode, is_premium=is_premium_mode)
+        self.preview_worker.preview_loaded.connect(self.on_preview_loaded)
+        self.preview_worker.preview_failed.connect(self.on_preview_failed)
+        self.preview_worker.start()
+    
+    def on_preview_loaded(self, preview_path, skybox_name):
+        """Handle successful preview loading"""
         try:
-            preview_path = get_sky_preview(skybox_name)
-            if preview_path and os.path.exists(preview_path):
-                pixmap = QPixmap(preview_path)
-                scaled_pixmap = pixmap.scaled(
-                    self.preview_label.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-                self.preview_label.setPixmap(scaled_pixmap)
-            else:
-                self.preview_label.setText(f"Preview not available for {skybox_name}")
+            pixmap = QPixmap(preview_path)
+            scaled_pixmap = pixmap.scaled(
+                self.preview_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.preview_label.setPixmap(scaled_pixmap)
         except Exception as e:
-            self.preview_label.setText(f"Error loading preview: {str(e)}")
+            self.preview_label.setText(f"Error displaying preview: {str(e)}")
+    
+    def on_preview_failed(self, error_message, skybox_name):
+        """Handle failed preview loading"""
+        self.preview_label.setText(error_message)
             
     def load_custom_skybox(self):
         """Load a custom skybox folder"""
@@ -778,7 +1385,9 @@ class ModificationsTab(QWidget):
             QMessageBox.warning(self, "Warning", "Please select a skybox first")
             return
             
-        skybox_name = current_item.text()
+        display_name = current_item.text()
+        # Strip popularity indicator if present
+        skybox_name = display_name.replace("🔥 ", "")
         
         # Start background operation
         if skybox_name.startswith("[Custom]"):
@@ -867,13 +1476,27 @@ class ModificationsTab(QWidget):
         self.apply_skybox_btn.setText("Apply Skybox")
             
     def apply_default_skybox(self):
-        """Apply default skybox"""
+        """Apply default skybox - works with both New API and Old API"""
         try:
+            # First, try to apply the default skybox directly
             result = apply_default_sky(self.current_client)
             if result:
                 QMessageBox.information(self, "Success", "Default skybox applied successfully!")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to apply default skybox")
+                return
+            
+            # If direct application failed, try to download/apply "Default-Sky" 
+            # This ensures it works with both APIs
+            try:
+                from src.skybox import apply_skybox
+                # Try to apply "Default-Sky" which should be available in both APIs
+                skybox_result = apply_skybox("Default-Sky", self.current_client)
+                if skybox_result:
+                    QMessageBox.information(self, "Success", "Default skybox applied successfully!")
+                else:
+                    QMessageBox.warning(self, "Error", "Default skybox not found. Please ensure 'Default-Sky' is available in your selected API mode.")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to apply default skybox: {str(e)}")
+                
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying default skybox: {str(e)}")
             
@@ -1232,19 +1855,36 @@ class ToolsTab(QWidget):
         """Update cache information display"""
         try:
             cache_info = get_cache_info()
+            cache_text = ""
+            cache_color = ""
+            
             if cache_info["assets_json_exists"] and cache_info["extracted_assets_count"] > 0:
-                self.cache_info_label.setText(
-                    f"Cache: {cache_info['extracted_assets_count']} assets ready for swapping"
-                )
-                self.cache_info_label.setStyleSheet("color: #10B981;")
+                cache_text = f"Cache: {cache_info['extracted_assets_count']} assets ready"
+                cache_color = "#10B981"
             elif cache_info["assets_json_exists"]:
-                self.cache_info_label.setText("Cache: Assets.json ready, no extracted files")
-                self.cache_info_label.setStyleSheet("color: #F59E0B;")
+                cache_text = "Cache: Assets.json ready, no extracted files"
+                cache_color = "#F59E0B"
             else:
-                self.cache_info_label.setText("Cache: No assets downloaded")
-                self.cache_info_label.setStyleSheet("color: #EF4444;")
+                cache_text = "Cache: No assets downloaded"
+                cache_color = "#EF4444"
+            
+            # Check API status
+            try:
+                from src.skybox import get_api_status
+                api_status = get_api_status()
+                if api_status["available"]:
+                    api_text = f" | API: ✅ {api_status['skybox_count']} skyboxes ({api_status['response_time']}ms)"
+                else:
+                    api_text = " | API: ❌ Offline"
+                cache_text += api_text
+            except Exception as e:
+                cache_text += " | API: ⚠️ Error"
+            
+            self.cache_info_label.setText(cache_text)
+            self.cache_info_label.setStyleSheet(f"color: {cache_color};")
+            
         except Exception:
-            self.cache_info_label.setText("Cache: Error reading cache")
+            self.cache_info_label.setText("Cache: Error reading info | API: Unknown")
             self.cache_info_label.setStyleSheet("color: #EF4444;")
     
     def open_fastflags_editor(self):
@@ -1465,9 +2105,8 @@ class PremiumTab(QWidget):
         description = QLabel(
             "Enter your CDBL Premium license key to unlock exclusive features:\n\n"
             "• No Arms Modification\n"
-            "• Exclusive Skyboxes (Coming Soon)\n"
+            "• Exclusive Skyboxes\n"
             "• Custom Sounds\n"
-            "• And More!\n\n"
             "Your license will be bound to this device."
         )
         description.setObjectName("settingsDescription")
@@ -1852,7 +2491,7 @@ class PremiumTab(QWidget):
     
     def verify_license_key(self, license_key, silent=False):
         """
-        Verify license key with EGate API
+        Verify license key with EGate API using worker thread
         
         Args:
             license_key: The key to verify
@@ -1865,117 +2504,92 @@ class PremiumTab(QWidget):
             self.status_label.setText("🔄 Verifying license key...")
             self.status_label.setStyleSheet("color: #74b9ff;")
         
+        # Store silent flag for later use
+        self.verification_silent = silent
+        
+        # Cancel any existing license worker
+        if hasattr(self, 'license_worker') and self.license_worker.isRunning():
+            self.license_worker.terminate()
+            self.license_worker.wait()
+        
+        # Start license verification in background
+        self.license_worker = LicenseWorker(license_key, operation='activate')
+        self.license_worker.license_verified.connect(lambda result: self.on_license_verified(result, silent))
+        self.license_worker.license_failed.connect(lambda error: self.on_license_failed(error, silent))
+        self.license_worker.start()
+    
+    def on_license_verified(self, result, silent=False):
+        """Handle successful license verification"""
         try:
-            from src.keysys import EGateKeySystem
-            
-            # Initialize key system
-            keysys = EGateKeySystem(self.api_url)
-            
-            # Verify the key
-            result = keysys.verify_key(license_key)
-            
-            if result["success"]:
-                # License is valid!
-                self.is_verified = True
-                self.license_key = license_key
-                
-                # Save to config
-                from src.first_run import save_license_key
-                save_license_key(license_key)
-                
-                if not silent:
-                    # Show success message
-                    email = result.get("details", {}).get("email", "N/A")
-                    first_use = result.get("details", {}).get("first_use", False)
-                    
-                    if first_use:
-                        QMessageBox.information(
-                            self,
-                            "License Activated!",
-                            f"✅ {result['message']}\n\n"
-                            f"Email: {email}\n"
-                            f"HWID: {keysys.get_hardware_id()}\n\n"
-                            f"Welcome to CDBL Premium!"
-                        )
-                    else:
-                        QMessageBox.information(
-                            self,
-                            "License Verified!",
-                            f"✅ {result['message']}\n\n"
-                            f"Email: {email}\n\n"
-                            f"Welcome back to CDBL Premium!"
-                        )
-                
-                # Show premium features
-                self.show_premium_features()
-                
-            else:
-                # License verification failed
-                self.is_verified = False
-                self.license_key = None
-                
-                error_type = result.get("error", "UNKNOWN")
-                error_message = result.get("message", "Unknown error")
-                
-                if not silent:
-                    # Show error based on type
-                    if error_type == "KEY_NOT_FOUND":
-                        QMessageBox.warning(
-                            self,
-                            "Invalid License",
-                            "❌ The license key you entered is invalid.\n\n"
-                            "Please check your key and try again."
-                        )
-                    elif error_type == "NO_EMAIL":
-                        QMessageBox.warning(
-                            self,
-                            "Email Required",
-                            "❌ This license key does not have an email bound.\n\n"
-                            "Please contact support to bind your email to this license."
-                        )
-                    elif error_type == "HWID_MISMATCH":
-                        QMessageBox.warning(
-                            self,
-                            "Device Mismatch",
-                            "❌ This license is already activated on another device.\n\n"
-                            "Each license can only be used on one device.\n"
-                            "Contact support to reset your HWID if you've changed devices."
-                        )
-                    elif error_type == "CONNECTION_ERROR" or error_type == "TIMEOUT":
-                        QMessageBox.warning(
-                            self,
-                            "Connection Error",
-                            "❌ Unable to connect to the license server.\n\n"
-                            "Please check your internet connection and try again."
-                        )
-                    else:
-                        QMessageBox.warning(
-                            self,
-                            "Verification Failed",
-                            f"❌ {error_message}\n\n"
-                            f"Error type: {error_type}"
-                        )
-                    
-                    self.status_label.setText(f"❌ {error_message}")
-                    self.status_label.setStyleSheet("color: #ff6b6b;")
-                
-        except Exception as e:
-            self.is_verified = False
-            self.license_key = None
+            # License is valid and premium features are enabled!
+            self.is_verified = True
+            self.license_key = result.get("license_key", "")
             
             if not silent:
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"An unexpected error occurred:\n\n{str(e)}"
-                )
-                self.status_label.setText(f"❌ Error: {str(e)}")
-                self.status_label.setStyleSheet("color: #ff6b6b;")
-        
+                # Show success message
+                email = result.get("details", {}).get("email", "N/A")
+                first_use = result.get("details", {}).get("first_use", False)
+                
+                # Get HWID for display
+                from src.keysys import EGateKeySystem
+                keysys = EGateKeySystem(self.api_url)
+                hwid = keysys.get_hardware_id()
+                
+                if first_use:
+                    QMessageBox.information(
+                        self,
+                        "License Activated!",
+                        f"✅ {result['message']}\n\n"
+                        f"Email: {email}\n"
+                        f"HWID: {hwid}\n\n"
+                        f"Welcome to CDBL Premium!"
+                    )
+                else:
+                    QMessageBox.information(
+                        self,
+                        "License Verified!",
+                        f"✅ {result['message']}\n\n"
+                        f"Email: {email}\n\n"
+                        f"Welcome back to CDBL Premium!"
+                    )
+            
+            # Show premium features
+            self.show_premium_features()
+            
+            # Refresh the premium toggle button and skybox list on the Modifications tab
+            if self.parent_window and hasattr(self.parent_window, 'modifications_tab'):
+                mods_tab = self.parent_window.modifications_tab
+                if hasattr(mods_tab, 'refresh_premium_toggle'):
+                    print("🔄 Refreshing premium toggle after license activation...")
+                    mods_tab.refresh_premium_toggle()
+                else:
+                    print("⚠️ Warning: modifications_tab does not have refresh_premium_toggle method")
+            else:
+                print("⚠️ Warning: Could not access modifications_tab for refresh")
+                
+        except Exception as e:
+            print(f"Error in on_license_verified: {e}")
         finally:
             if not silent:
                 self.submit_btn.setEnabled(True)
                 self.submit_btn.setText("Activate License")
+    
+    def on_license_failed(self, error_message, silent=False):
+        """Handle failed license verification"""
+        self.is_verified = False
+        self.license_key = None
+        
+        if not silent:
+            QMessageBox.warning(
+                self,
+                "Verification Failed",
+                f"❌ {error_message}"
+            )
+            self.status_label.setText(f"❌ {error_message}")
+            self.status_label.setStyleSheet("color: #ff6b6b;")
+            
+            self.submit_btn.setEnabled(True)
+            self.submit_btn.setText("Activate License")
     
     def deactivate_license(self):
         """Deactivate the current license"""
@@ -1999,6 +2613,13 @@ class PremiumTab(QWidget):
             
             # Show license input again
             self.show_license_input()
+            
+            # Refresh the premium toggle button and skybox list on the Modifications tab
+            if self.parent_window and hasattr(self.parent_window, 'modifications_tab'):
+                mods_tab = self.parent_window.modifications_tab
+                if hasattr(mods_tab, 'refresh_premium_toggle'):
+                    print("🔄 Refreshing premium toggle after license deactivation...")
+                    mods_tab.refresh_premium_toggle()
             
             QMessageBox.information(
                 self,
@@ -2326,8 +2947,10 @@ class PremiumTab(QWidget):
     def set_preview_state(self, playing: bool):
         """Update UI state during preview"""
         self.is_playing = playing
-        self.preview_replacement_btn.setEnabled(not playing)
-        self.stop_preview_btn.setEnabled(playing)
+        if hasattr(self, 'preview_replacement_btn'):
+            self.preview_replacement_btn.setEnabled(not playing)
+        if hasattr(self, 'stop_preview_btn'):
+            self.stop_preview_btn.setEnabled(playing)
     
     def on_volume_changed(self, value: int):
         """Handle volume slider change"""
@@ -2336,7 +2959,10 @@ class PremiumTab(QWidget):
     
     def cleanup_temp_files(self):
         """Clean up temporary audio files"""
-        self.stop_preview()
+        try:
+            self.stop_preview()
+        except Exception as e:
+            print(f"Warning: Error stopping preview during cleanup: {e}")
         
         for temp_file in self.temp_files:
             try:
@@ -2344,6 +2970,21 @@ class PremiumTab(QWidget):
                     os.unlink(temp_file)
             except Exception:
                 pass
+    
+    def refresh_premium_status(self):
+        """Refresh the premium tab to reflect current premium status"""
+        try:
+            from src.keysys import check_premium_status
+            
+            if check_premium_status():
+                print("🎉 Premium tab refreshed - Premium features available")
+                # If there's a UI update needed for premium status, add it here
+                # For example, enable/disable certain UI elements
+            else:
+                print("ℹ️ Premium tab refreshed - Free mode")
+                
+        except Exception as e:
+            print(f"⚠️ Error refreshing premium status: {e}")
     
     def swap_sounds(self):
         """Execute sound swap"""
@@ -2681,6 +3322,9 @@ class CDBlauncher(QMainWindow):
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.init_ui()
         self.apply_styles()
+        
+        # Validate license key on startup (same validation as activation)
+        QTimer.singleShot(500, self.validate_license_on_startup)
         
         # Download files on startup
         QTimer.singleShot(1000, self.download_initial_files)
@@ -3368,6 +4012,34 @@ class CDBlauncher(QMainWindow):
         """
         
         self.setStyleSheet(style)
+    
+    def validate_license_on_startup(self):
+        """Validate license key on startup and enable premium features if valid"""
+        try:
+            print("🔍 Performing startup license validation...")
+            
+            # Validate stored license using the same process as activation
+            validation_result = startup_license_validation()
+            
+            if validation_result["success"]:
+                if validation_result["premium_enabled"]:
+                    print("✅ Premium access validated - Features available")
+                    # Update UI to reflect premium status if needed
+                    if hasattr(self, 'premium_tab'):
+                        # Refresh premium tab to show available features
+                        self.premium_tab.refresh_premium_status()
+                    if hasattr(self, 'modifications_tab'):
+                        # Update premium toggle in modifications tab
+                        self.modifications_tab.initialize_premium_toggle()
+                else:
+                    print("⚠️ Limited access - Connection issues, running in free mode")
+            else:
+                print(f"❌ License validation failed: {validation_result.get('message', 'Unknown error')}")
+                # Premium features will remain disabled
+                
+        except Exception as e:
+            print(f"❌ Error during startup license validation: {e}")
+            # Continue running without premium features
         
     def download_initial_files(self):
         """Download initial files in background"""

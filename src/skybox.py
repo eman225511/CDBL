@@ -5,23 +5,261 @@ Contains all skybox-related functionality
 
 import os
 import shutil
+import requests
+import json
 from .core import (
     cdbl_skybox_data_path, cdbl_skybox_pngs_path, cdbl_skybox_skys_path,
     cdbl_skybox_patch_path, download_and_extract, download_and_extract_with_progress, get_versions_path
 )
 
+# Skybox API Configuration
+SKYBOX_API_BASE_URL = "https://skys.vercel.app"
+SKYBOX_API_KEY = "skyapi2651"  # Public key for regular skyboxes (no need to hide) 
+
+# API timeout settings
+API_TIMEOUT = 30
+API_RETRY_COUNT = 2
+
+# API Helper Functions
+def make_api_request(endpoint, params=None, headers=None, timeout=API_TIMEOUT):
+    """Make a request to the Skybox API with error handling and retries"""
+    url = f"{SKYBOX_API_BASE_URL}{endpoint}"
+    
+    # Default headers with API key
+    request_headers = {
+        'x-api-key': SKYBOX_API_KEY,
+        'User-Agent': 'CDBL/2.0'
+    }
+    if headers:
+        request_headers.update(headers)
+    
+    for attempt in range(API_RETRY_COUNT):
+        try:
+            response = requests.get(url, params=params, headers=request_headers, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            print(f"API request attempt {attempt + 1} failed: {e}")
+            if attempt == API_RETRY_COUNT - 1:
+                raise
+    
+    return None
+
+def get_skyboxes_from_api():
+    """Get list of available skyboxes from API"""
+    try:
+        response = make_api_request("/api/skyboxes")
+        if response and response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        print(f"Failed to fetch skyboxes from API: {e}")
+        return None
+
+def search_skyboxes_api(query):
+    """Search skyboxes using the API"""
+    try:
+        response = make_api_request("/api/skyboxes/search", params={"q": query})
+        if response and response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        print(f"Failed to search skyboxes: {e}")
+        return None
+
+def get_popular_skyboxes_api():
+    """Get popular skyboxes from API"""
+    try:
+        response = make_api_request("/api/skyboxes/popular")
+        if response and response.status_code == 200:
+            data = response.json()
+            print(f"🔍 Popular API raw response: {data}")  # Debug output
+            return data
+        else:
+            print(f"🔍 Popular API failed - Status: {response.status_code if response else 'No response'}")
+        return None
+    except Exception as e:
+        print(f"Failed to fetch popular skyboxes: {e}")
+        return None
+
+# Premium API Functions
+def make_premium_api_request(endpoint, params=None, headers=None, timeout=API_TIMEOUT):
+    """Make a request to the Premium Skybox API with error handling and retries"""
+    from .premium import get_premium_api_key
+    
+    premium_key = get_premium_api_key()
+    if not premium_key:
+        raise Exception("Premium API key not set")
+    
+    url = f"{SKYBOX_API_BASE_URL}{endpoint}"
+    
+    # Default headers with premium API key
+    request_headers = {
+        'x-premium-key': premium_key,
+        'User-Agent': 'CDBL/2.0'
+    }
+    if headers:
+        request_headers.update(headers)
+    
+    for attempt in range(API_RETRY_COUNT):
+        try:
+            response = requests.get(url, params=params, headers=request_headers, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            print(f"Premium API request attempt {attempt + 1} failed: {e}")
+            if attempt == API_RETRY_COUNT - 1:
+                raise
+    
+    return None
+
+def get_premium_skyboxes_from_api():
+    """Get list of available premium skyboxes from API"""
+    try:
+        response = make_premium_api_request("/api/premium")
+        if response and response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        print(f"Failed to fetch premium skyboxes from API: {e}")
+        return None
+
+def get_popular_premium_skyboxes_api():
+    """Get popular premium skyboxes from API"""
+    try:
+        response = make_premium_api_request("/api/premium/popular")
+        if response and response.status_code == 200:
+            data = response.json()
+            print(f"🔍 Premium Popular API raw response: {data}")  # Debug output
+            return data
+        else:
+            print(f"🔍 Premium Popular API failed - Status: {response.status_code if response else 'No response'}")
+        return None
+    except Exception as e:
+        print(f"Failed to fetch popular premium skyboxes: {e}")
+        return None
+
+def search_premium_skyboxes_api(query):
+    """Search premium skyboxes using the API"""
+    try:
+        response = make_premium_api_request("/api/premium/search", params={"q": query})
+        if response and response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        print(f"Failed to search premium skyboxes: {e}")
+        return None
+
+def download_skybox_from_api(sky_name, destination_path, progress_callback=None):
+    """Download a skybox ZIP file from the API"""
+    try:
+        if progress_callback:
+            progress_callback(10, f"Requesting download for {sky_name}...")
+        
+        # Get download URL from API
+        response = make_api_request("/api/skyboxes", params={"download": sky_name})
+        if not response or response.status_code != 200:
+            return False
+        
+        if progress_callback:
+            progress_callback(30, f"Starting download of {sky_name}...")
+        
+        # Download the file with progress tracking
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(destination_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    if progress_callback and total_size > 0:
+                        progress = 30 + int((downloaded / total_size) * 60)
+                        progress_callback(progress, f"Downloading {sky_name}... {downloaded//1024}KB")
+        
+        if progress_callback:
+            progress_callback(95, f"Download complete, extracting {sky_name}...")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Failed to download {sky_name} from API: {e}")
+        return False
+
 # Skybox Name Functions
-def make_skyname_list():
+def make_skyname_list(force_local=False):
     """
-    Reads the Sky-list.txt file and returns a list of all sky names.
+    Get list of all sky names, prioritizing New API but falling back to Old API file.
+    Always ensures "Default-Sky" is included for both APIs.
+    
+    Args:
+        force_local: If True, skip New API and load from Old API file only
     """
+    # If Old API mode is forced, skip New API
+    if force_local:
+        print("� Old API mode: Skipping New API, loading from Old API file")
+    else:
+        # Try New API first
+        try:
+            skyboxes = get_skyboxes_from_api()
+            if skyboxes:
+                skynames = [skybox.get('sky_name', '') for skybox in skyboxes if skybox.get('sky_name')]
+                if skynames:
+                    print(f"🆕 Loaded {len(skynames)} skyboxes from New API")
+                    # Ensure "Default-Sky" is included for New API
+                    cleaned_names = [name.replace(" ", "") for name in skynames]
+                    if "Default-Sky" not in cleaned_names:
+                        cleaned_names.insert(0, "Default-Sky")
+                        print("✅ Added 'Default-Sky' to New API list")
+                    return cleaned_names
+        except Exception as e:
+            print(f"New API unavailable, falling back to Old API file: {e}")
+    
+    # Fallback to Old API file
     sky_list_file = os.path.join(cdbl_skybox_data_path, 'Sky-list.txt')
-    if not os.path.exists(sky_list_file):
+    local_skyboxes = []
+    
+    # First, try to load from Sky-list.txt
+    if os.path.exists(sky_list_file):
+        print("📁 Loading skyboxes from Old API Sky-list.txt")
+        with open(sky_list_file, 'r', encoding='utf-8') as f:
+            local_skyboxes = [line.strip().replace(" ", "") for line in f if line.strip()]
+    else:
         print(f"Sky-list.txt not found at {sky_list_file}")
-        return []
-    with open(sky_list_file, 'r', encoding='utf-8') as f:
-        skynames = [line.strip().replace(" ", "") for line in f if line.strip()]
-    return skynames
+    
+    # Also scan local PNG files for additional skyboxes
+    try:
+        print("🖼️ Scanning local PNG files for skyboxes...")
+        png_skyboxes = []
+        if os.path.exists(cdbl_skybox_pngs_path):
+            for file in os.listdir(cdbl_skybox_pngs_path):
+                if file.lower().endswith('.png'):
+                    # Remove .png extension and clean the name
+                    skybox_name = file[:-4].replace(" ", "")
+                    if skybox_name not in local_skyboxes:  # Avoid duplicates
+                        png_skyboxes.append(skybox_name)
+            
+            if png_skyboxes:
+                print(f"�️ Found {len(png_skyboxes)} additional skyboxes from PNG files")
+                local_skyboxes.extend(png_skyboxes)
+        else:
+            print(f"PNG directory not found at {cdbl_skybox_pngs_path}")
+    except Exception as e:
+        print(f"Error scanning PNG files: {e}")
+    
+    # If no skyboxes found, return at least Default-Sky
+    if not local_skyboxes:
+        print("⚠️ No local skyboxes found, returning Default-Sky only")
+        return ["Default-Sky"]
+    
+    # Ensure "Default-Sky" is included
+    if "Default-Sky" not in local_skyboxes:
+        local_skyboxes.insert(0, "Default-Sky")
+        print("✅ Added 'Default-Sky' to local skybox list")
+    
+    print(f"📁 Total local skyboxes loaded: {len(local_skyboxes)}")
+    return local_skyboxes
 
 def make_skyname_dict():
     """
@@ -31,6 +269,79 @@ def make_skyname_dict():
     skynames = make_skyname_list()
     skynames_sorted = sorted(skynames, key=lambda x: x.lower())
     return {i + 1: name for i, name in enumerate(skynames_sorted)}
+
+def search_skyboxes(query, limit=50):
+    """
+    Search for skyboxes by name using API or local fallback
+    
+    Args:
+        query: Search term
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching skybox names
+    """
+    if not query or len(query.strip()) < 2:
+        return make_skyname_list()[:limit]
+    
+    query = query.strip()
+    
+    # Try API search first
+    try:
+        api_results = search_skyboxes_api(query)
+        if api_results:
+            skynames = [result.get('sky_name', '').replace(" ", "") for result in api_results if result.get('sky_name')]
+            if skynames:
+                print(f"🔍 Found {len(skynames)} skyboxes matching '{query}' via API")
+                return skynames[:limit]
+    except Exception as e:
+        print(f"API search failed, using local search: {e}")
+    
+    # Fallback to local search
+    all_skyboxes = make_skyname_list()
+    query_lower = query.lower()
+    matches = [name for name in all_skyboxes if query_lower in name.lower()]
+    
+    print(f"📁 Found {len(matches)} local matches for '{query}'")
+    return matches[:limit]
+
+def get_popular_skyboxes(limit=10):
+    """
+    Get popular skyboxes with download counts
+    
+    Args:
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of popular skybox names
+    """
+    try:
+        popular_data = get_popular_skyboxes_api()
+        if popular_data:
+            print(f"🔍 Processing popular data: {popular_data}")  # Debug output
+            
+            # Handle the response format: [{"sky_name": "Sunset", "downloads": 42}, ...]
+            if isinstance(popular_data, list) and len(popular_data) > 0:
+                popular_names = []
+                for item in popular_data:
+                    if isinstance(item, dict) and 'sky_name' in item:
+                        sky_name = item['sky_name'].replace(" ", "")
+                        downloads = item.get('downloads', 0)
+                        popular_names.append(sky_name)
+                        print(f"  📈 {sky_name}: {downloads} downloads")
+                
+                if popular_names:
+                    print(f"📈 Successfully loaded {len(popular_names)} popular skyboxes from API")
+                    return popular_names[:limit]
+                else:
+                    print("📝 No valid popular skyboxes found in API response")
+            else:
+                print(f"📝 API returned empty or invalid popular data: {type(popular_data)}")
+    except Exception as e:
+        print(f"Failed to get popular skyboxes: {e}")
+    
+    print("📝 Falling back to empty popular list (no popular skyboxes available)")
+    return []  # Return empty list instead of fallback to avoid confusion
 
 def download_sky_with_progress(sky_name, progress_callback=None):
     """Download a specific sky by name with progress callback support for GUI."""
@@ -48,75 +359,142 @@ def download_sky_with_progress(sky_name, progress_callback=None):
     if progress_callback:
         progress_callback(0, f"Starting download of {sky_name}...")
     
-    sky_url = f"https://github.com/eman225511/CDBL-CLI/raw/refs/heads/main/data/SkyboxData/SkyZIPs/{sky_name_clean}.zip"
-    
     # Ensure the destination folder exists
     os.makedirs(sky_folder, exist_ok=True)
     
-    # Use the progress-enabled download function
-    success = download_and_extract_with_progress(sky_url, sky_folder, progress_callback)
-    
-    if success:
-        print(f"✅ Successfully downloaded skybox: {sky_name}")
-    else:
-        print(f"❌ Failed to download skybox: {sky_name}")
-        # Clean up empty folder if download failed
-        try:
-            if os.path.exists(sky_folder) and not os.listdir(sky_folder):
-                os.rmdir(sky_folder)
-        except Exception:
-            pass
-    
-    return success
+    # Try API download first
+    temp_file_path = None
+    try:
+        import tempfile
+        import zipfile
+        
+        # Create temporary file (delete=False means we manage deletion manually)
+        temp_file = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
+        temp_file_path = temp_file.name
+        temp_file.close()  # Close the file handle immediately so it can be used on Windows
+        
+        if download_skybox_from_api(sky_name_clean, temp_file_path, progress_callback):
+            if progress_callback:
+                progress_callback(95, f"Extracting {sky_name}...")
+            
+            # Extract the ZIP file
+            with zipfile.ZipFile(temp_file_path, 'r') as zip_ref:
+                zip_ref.extractall(sky_folder)
+            
+            # Clean up temp file
+            try:
+                os.unlink(temp_file_path)
+            except Exception as cleanup_err:
+                print(f"Warning: Could not delete temp file: {cleanup_err}")
+            
+            if progress_callback:
+                progress_callback(100, f"Successfully downloaded {sky_name}")
+            
+            print(f"✅ Successfully downloaded skybox via API: {sky_name}")
+            return True
+        else:
+            raise Exception("API download failed")
+                
+    except Exception as e:
+        print(f"API download failed for {sky_name}: {e}")
+        # Clean up temp file on failure
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as cleanup_err:
+                print(f"Warning: Could not delete temp file: {cleanup_err}")
+        print("🔄 Falling back to direct GitHub download...")
+        
+        # Fallback to original direct download method
+        sky_url = f"https://github.com/eman225511/CDBL-CLI/raw/refs/heads/main/data/SkyboxData/SkyZIPs/{sky_name_clean}.zip"
+        
+        success = download_and_extract_with_progress(sky_url, sky_folder, progress_callback)
+        
+        if success:
+            print(f"✅ Successfully downloaded skybox via fallback: {sky_name}")
+        else:
+            print(f"❌ Failed to download skybox: {sky_name}")
+            # Clean up empty folder if download failed
+            try:
+                if os.path.exists(sky_folder) and not os.listdir(sky_folder):
+                    os.rmdir(sky_folder)
+            except Exception:
+                pass
+        
+        return success
 
 def download_sky(sky_name):
     """Download a specific sky by name into a folder with the same name, skip if already exists."""
-    sky_name_clean = sky_name.replace(" ", "")  # Remove spaces for folder name
-    sky_folder = os.path.join(cdbl_skybox_skys_path, sky_name_clean)
+    return download_sky_with_progress(sky_name, None)
     
-    # Check if folder exists and contains any files
-    if os.path.isdir(sky_folder) and os.listdir(sky_folder):
-        print(f"🔍 Sky '{sky_name}' already exists, skipping download.")
-        return True
-    
-    print(f"📥 Downloading skybox: {sky_name}")
-    sky_url = f"https://github.com/eman225511/CDBL-CLI/raw/refs/heads/main/data/SkyboxData/SkyZIPs/{sky_name_clean}.zip"
-    
-    # Ensure the destination folder exists
-    os.makedirs(sky_folder, exist_ok=True)
-    
-    # Use the progress-enabled download function
-    success = download_and_extract_with_progress(sky_url, sky_folder)
-    
-    if success:
-        print(f"✅ Successfully downloaded skybox: {sky_name}")
-    else:
-        print(f"❌ Failed to download skybox: {sky_name}")
-        # Clean up empty folder if download failed
-        try:
-            if os.path.exists(sky_folder) and not os.listdir(sky_folder):
-                os.rmdir(sky_folder)
-        except Exception:
-            pass
-    
-    return success
-    
-def get_sky_preview(sky_name):
+def get_sky_preview(sky_name, force_local=False, is_premium=False):
     """
     Get the preview image for a specific sky by name.
     
     Args:
         sky_name: The name of the sky to get the preview for.
+        force_local: If True, only use local files, skip API
+        is_premium: If True, use premium API endpoint for previews
     
     Returns:
         str: Path to the preview image, or None if not found.
     """
     sky_name_clean = sky_name.replace(" ", "")  # Remove spaces for folder name
+    
+    # If force_local is True (Old API mode), check local first and skip API
+    if force_local:
+        preview_path = os.path.join(cdbl_skybox_pngs_path, f"{sky_name_clean}.png")
+        if os.path.exists(preview_path):
+            print(f"📁 Using local preview for '{sky_name}' (Old API mode)")
+            return preview_path
+        else:
+            print(f"Local preview image for '{sky_name}' not found in Old API mode.")
+            return None
+    
+    # Try to get preview from API first (New API mode)
+    try:
+        # Use premium endpoint if is_premium is True
+        if is_premium:
+            preview_url = f"{SKYBOX_API_BASE_URL}/api/premium/preview?name={sky_name_clean}"
+        else:
+            preview_url = f"{SKYBOX_API_BASE_URL}/api/skyboxes/preview?name={sky_name_clean}"
+        
+        # Download preview to temporary location
+        import tempfile
+        temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        temp_file_path = temp_file.name
+        
+        try:
+            response = requests.get(preview_url, timeout=10)
+            if response.status_code == 200:
+                temp_file.write(response.content)
+                temp_file.flush()
+                temp_file.close()  # Close the file handle
+                tier = "premium" if is_premium else "regular"
+                print(f"📡 Loaded {tier} preview for '{sky_name}' from API")
+                return temp_file_path
+            else:
+                temp_file.close()
+                os.unlink(temp_file_path)
+        except Exception as download_err:
+            temp_file.close()
+            if os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+            raise download_err
+            
+    except Exception as e:
+        print(f"Failed to get preview from API for '{sky_name}': {e}")
+    
+    # Fallback to local preview
     preview_path = os.path.join(cdbl_skybox_pngs_path, f"{sky_name_clean}.png")
     if os.path.exists(preview_path):
+        print(f"📁 Using local preview for '{sky_name}'")
         return preview_path
     else:
-        print(f"Preview image for '{sky_name}' not found.")
+        print(f"Preview image for '{sky_name}' not found locally or via API.")
         return None
 
 def get_custom_skybox_preview(path_to_sky_files):
@@ -469,3 +847,165 @@ def apply_default_sky(target_client_name):
     
     print(f"Successfully applied default sky to '{target_client_name}'.")
     return True
+
+def get_api_status():
+    """
+    Check if the Skybox API is available and get basic info
+    
+    Returns:
+        dict: API status information
+    """
+    try:
+        response = requests.get(f"{SKYBOX_API_BASE_URL}/api/health", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Try to get actual skybox count from the skyboxes endpoint instead of health
+            # This avoids premium counting issues
+            try:
+                skyboxes_response = requests.get(f"{SKYBOX_API_BASE_URL}/api/skyboxes", 
+                                               headers={'x-api-key': SKYBOX_API_KEY}, 
+                                               timeout=5)
+                if skyboxes_response.status_code == 200:
+                    skyboxes_data = skyboxes_response.json()
+                    actual_count = len(skyboxes_data) if isinstance(skyboxes_data, list) else 0
+                else:
+                    actual_count = data.get("skyboxes", {}).get("count", 0)
+            except:
+                actual_count = data.get("skyboxes", {}).get("count", 0)
+            
+            return {
+                "available": True,
+                "status": data.get("status", "unknown"),
+                "skybox_count": actual_count,
+                "response_time": data.get("responseTime", 0)
+            }
+    except Exception as e:
+        print(f"API health check failed: {e}")
+    
+    return {
+        "available": False,
+        "status": "unavailable", 
+        "skybox_count": 0,
+        "response_time": 0
+    }
+
+def get_premium_api_status():
+    """
+    Check if the Premium Skybox API is available and get premium skybox count
+    First checks health endpoint to see if premium content exists
+    
+    Returns:
+        dict: Premium API status information
+    """
+    try:
+        from .premium import has_premium_access, get_premium_api_key
+        
+        # Check if user has premium access
+        if not has_premium_access():
+            return {
+                "available": False,
+                "status": "no_access",
+                "premium_skybox_count": 0,
+                "message": "Premium access required"
+            }
+        
+        # Check premium API health
+        premium_key = get_premium_api_key()
+        if not premium_key:
+            return {
+                "available": False,
+                "status": "no_key",
+                "premium_skybox_count": 0,
+                "message": "Premium API key not configured"
+            }
+        
+        # First check the health endpoint to see if premium content exists
+        try:
+            health_response = requests.get(f"{SKYBOX_API_BASE_URL}/api/health", timeout=5)
+            if health_response.status_code == 200:
+                health_data = health_response.json()
+                # Access nested structure: skyboxes.premium.count
+                skyboxes_data = health_data.get('skyboxes', {})
+                premium_data = skyboxes_data.get('premium', {})
+                premium_count = premium_data.get('count', 0)
+                premium_status = premium_data.get('status', 'unknown')
+                
+                print(f"🔍 Health endpoint - Premium count: {premium_count}, status: {premium_status}")
+                
+                # If no premium skyboxes exist in the health endpoint, don't try to fetch them
+                if premium_count == 0:
+                    return {
+                        "available": False,
+                        "status": "no_content",
+                        "premium_skybox_count": 0,
+                        "message": "No premium skyboxes have been released yet"
+                    }
+        except Exception as health_error:
+            print(f"Health check failed, proceeding with premium API check: {health_error}")
+        
+        # Try to get premium skyboxes count from the actual premium endpoint
+        try:
+            response = make_premium_api_request("/api/premium")
+            if response and response.status_code == 200:
+                premium_data = response.json()
+                premium_count = len(premium_data) if isinstance(premium_data, list) else 0
+                
+                return {
+                    "available": True,
+                    "status": "available",
+                    "premium_skybox_count": premium_count,
+                    "message": f"{premium_count} premium skyboxes available"
+                }
+            elif response and response.status_code == 500:
+                # Server error - likely no premium content available yet
+                return {
+                    "available": False,
+                    "status": "no_content",
+                    "premium_skybox_count": 0,
+                    "message": "No premium skyboxes have been released yet"
+                }
+            else:
+                status_code = response.status_code if response else "No response"
+                return {
+                    "available": False,
+                    "status": "api_error",
+                    "premium_skybox_count": 0,
+                    "message": f"Premium API error (Status: {status_code})"
+                }
+        except Exception as e:
+            # Check if it's a server error in the exception message
+            error_msg = str(e)
+            if "500" in error_msg or "Server Error" in error_msg:
+                return {
+                    "available": False,
+                    "status": "no_content",
+                    "premium_skybox_count": 0,
+                    "message": "No premium skyboxes have been released yet"
+                }
+            else:
+                return {
+                    "available": False,
+                    "status": "connection_error", 
+                    "premium_skybox_count": 0,
+                    "message": f"Connection error: {str(e)}"
+                }
+            
+    except Exception as e:
+        return {
+            "available": False,
+            "status": "error",
+            "premium_skybox_count": 0,
+            "message": f"Error: {str(e)}"
+        }
+
+def set_premium_api_key(api_key):
+    """
+    Set the premium API key for accessing premium skyboxes
+    
+    Args:
+        api_key: Premium API key string
+    """
+    global SKYBOX_PREMIUM_API_KEY
+    SKYBOX_PREMIUM_API_KEY = api_key
+    print("🔑 Premium API key configured")
