@@ -11,6 +11,7 @@ from .core import (
     cdbl_skybox_data_path, cdbl_skybox_pngs_path, cdbl_skybox_skys_path,
     cdbl_skybox_patch_path, download_and_extract, download_and_extract_with_progress, get_versions_path
 )
+from .cache import skybox_cache, popular_cache, preview_cache, api_rate_limiter
 
 # Skybox API Configuration
 SKYBOX_API_BASE_URL = "https://skys.vercel.app"
@@ -23,6 +24,9 @@ API_RETRY_COUNT = 2
 # API Helper Functions
 def make_api_request(endpoint, params=None, headers=None, timeout=API_TIMEOUT):
     """Make a request to the Skybox API with error handling and retries"""
+    # Apply rate limiting
+    api_rate_limiter.wait_if_needed()
+    
     url = f"{SKYBOX_API_BASE_URL}{endpoint}"
     
     # Default headers with API key
@@ -46,34 +50,70 @@ def make_api_request(endpoint, params=None, headers=None, timeout=API_TIMEOUT):
     return None
 
 def get_skyboxes_from_api():
-    """Get list of available skyboxes from API"""
+    """Get list of available skyboxes from API with caching"""
+    cache_key = "skyboxes_list"
+    
+    # Check cache first
+    cached_data = skybox_cache.get(cache_key)
+    if cached_data is not None:
+        print("📦 Using cached skyboxes list")
+        return cached_data
+    
     try:
+        print("🌐 Fetching skyboxes from API...")
         response = make_api_request("/api/skyboxes")
         if response and response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Cache the result
+            skybox_cache.set(cache_key, data)
+            return data
         return None
     except Exception as e:
         print(f"Failed to fetch skyboxes from API: {e}")
         return None
 
 def search_skyboxes_api(query):
-    """Search skyboxes using the API"""
+    """Search skyboxes using the API with caching"""
+    cache_key = f"search_skyboxes_{query.lower()}"
+    
+    # Check cache first
+    cached_data = skybox_cache.get(cache_key)
+    if cached_data is not None:
+        print(f"📦 Using cached search results for: {query}")
+        return cached_data
+    
     try:
+        print(f"🌐 Searching skyboxes for: {query}")
         response = make_api_request("/api/skyboxes/search", params={"q": query})
         if response and response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Cache search results
+            skybox_cache.set(cache_key, data)
+            return data
         return None
     except Exception as e:
         print(f"Failed to search skyboxes: {e}")
         return None
 
-def get_popular_skyboxes_api():
-    """Get popular skyboxes from API"""
+def get_popular_skyboxes_api(limit=None):
+    """Get popular skyboxes from API with caching"""
+    cache_key = f"popular_skyboxes_{limit}" if limit else "popular_skyboxes"
+    
+    # Check cache first
+    cached_data = popular_cache.get(cache_key)
+    if cached_data is not None:
+        print("📦 Using cached popular skyboxes")
+        return cached_data
+    
     try:
-        response = make_api_request("/api/skyboxes/popular")
+        print("🌐 Fetching popular skyboxes from API...")
+        params = {"limit": limit} if limit else None
+        response = make_api_request("/api/skyboxes/popular", params=params)
         if response and response.status_code == 200:
             data = response.json()
             print(f"🔍 Popular API raw response: {data}")  # Debug output
+            # Cache the result with longer TTL for popular lists
+            popular_cache.set(cache_key, data)
             return data
         else:
             print(f"🔍 Popular API failed - Status: {response.status_code if response else 'No response'}")
@@ -86,6 +126,9 @@ def get_popular_skyboxes_api():
 def make_premium_api_request(endpoint, params=None, headers=None, timeout=API_TIMEOUT):
     """Make a request to the Premium Skybox API with error handling and retries"""
     from .premium import get_premium_api_key
+    
+    # Apply rate limiting
+    api_rate_limiter.wait_if_needed()
     
     premium_key = get_premium_api_key()
     if not premium_key:
@@ -114,23 +157,47 @@ def make_premium_api_request(endpoint, params=None, headers=None, timeout=API_TI
     return None
 
 def get_premium_skyboxes_from_api():
-    """Get list of available premium skyboxes from API"""
+    """Get list of available premium skyboxes from API with caching"""
+    cache_key = "premium_skyboxes_list"
+    
+    # Check cache first
+    cached_data = skybox_cache.get(cache_key)
+    if cached_data is not None:
+        print("📦 Using cached premium skyboxes list")
+        return cached_data
+    
     try:
+        print("🌐 Fetching premium skyboxes from API...")
         response = make_premium_api_request("/api/premium")
         if response and response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Cache the result
+            skybox_cache.set(cache_key, data)
+            return data
         return None
     except Exception as e:
         print(f"Failed to fetch premium skyboxes from API: {e}")
         return None
 
-def get_popular_premium_skyboxes_api():
-    """Get popular premium skyboxes from API"""
+def get_popular_premium_skyboxes_api(limit=None):
+    """Get popular premium skyboxes from API with caching"""
+    cache_key = f"popular_premium_skyboxes_{limit}" if limit else "popular_premium_skyboxes"
+    
+    # Check cache first
+    cached_data = popular_cache.get(cache_key)
+    if cached_data is not None:
+        print("📦 Using cached popular premium skyboxes")
+        return cached_data
+    
     try:
-        response = make_premium_api_request("/api/premium/popular")
+        print("🌐 Fetching popular premium skyboxes from API...")
+        params = {"limit": limit} if limit else None
+        response = make_premium_api_request("/api/premium/popular", params=params)
         if response and response.status_code == 200:
             data = response.json()
             print(f"🔍 Premium Popular API raw response: {data}")  # Debug output
+            # Cache the result with longer TTL for popular lists
+            popular_cache.set(cache_key, data)
             return data
         else:
             print(f"🔍 Premium Popular API failed - Status: {response.status_code if response else 'No response'}")
@@ -140,11 +207,23 @@ def get_popular_premium_skyboxes_api():
         return None
 
 def search_premium_skyboxes_api(query):
-    """Search premium skyboxes using the API"""
+    """Search premium skyboxes using the API with caching"""
+    cache_key = f"search_premium_skyboxes_{query.lower()}"
+    
+    # Check cache first
+    cached_data = skybox_cache.get(cache_key)
+    if cached_data is not None:
+        print(f"📦 Using cached premium search results for: {query}")
+        return cached_data
+    
     try:
+        print(f"🌐 Searching premium skyboxes for: {query}")
         response = make_premium_api_request("/api/premium/search", params={"q": query})
         if response and response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Cache search results
+            skybox_cache.set(cache_key, data)
+            return data
         return None
     except Exception as e:
         print(f"Failed to search premium skyboxes: {e}")
@@ -429,7 +508,7 @@ def download_sky(sky_name):
     
 def get_sky_preview(sky_name, force_local=False, is_premium=False):
     """
-    Get the preview image for a specific sky by name.
+    Get the preview image for a specific sky by name with caching.
     
     Args:
         sky_name: The name of the sky to get the preview for.
@@ -451,6 +530,14 @@ def get_sky_preview(sky_name, force_local=False, is_premium=False):
             print(f"Local preview image for '{sky_name}' not found in Old API mode.")
             return None
     
+    # Check preview cache first
+    tier = "premium" if is_premium else "regular"
+    cache_key = f"preview_{tier}_{sky_name_clean}"
+    cached_preview = preview_cache.get(cache_key)
+    if cached_preview and os.path.exists(cached_preview):
+        print(f"📦 Using cached {tier} preview for '{sky_name}'")
+        return cached_preview
+    
     # Try to get preview from API first (New API mode)
     try:
         # Use premium endpoint if is_premium is True
@@ -458,6 +545,9 @@ def get_sky_preview(sky_name, force_local=False, is_premium=False):
             preview_url = f"{SKYBOX_API_BASE_URL}/api/premium/preview?name={sky_name_clean}"
         else:
             preview_url = f"{SKYBOX_API_BASE_URL}/api/skyboxes/preview?name={sky_name_clean}"
+        
+        # Apply rate limiting for preview downloads
+        api_rate_limiter.wait_if_needed()
         
         # Download preview to temporary location
         import tempfile
@@ -470,8 +560,10 @@ def get_sky_preview(sky_name, force_local=False, is_premium=False):
                 temp_file.write(response.content)
                 temp_file.flush()
                 temp_file.close()  # Close the file handle
-                tier = "premium" if is_premium else "regular"
                 print(f"📡 Loaded {tier} preview for '{sky_name}' from API")
+                
+                # Cache the preview path
+                preview_cache.set(cache_key, temp_file_path)
                 return temp_file_path
             else:
                 temp_file.close()
@@ -1009,3 +1101,24 @@ def set_premium_api_key(api_key):
     global SKYBOX_PREMIUM_API_KEY
     SKYBOX_PREMIUM_API_KEY = api_key
     print("🔑 Premium API key configured")
+
+# Cache Management Functions
+def get_cache_stats():
+    """Get statistics about cache usage"""
+    from .cache import get_cache_stats
+    return get_cache_stats()
+
+def clear_skybox_caches():
+    """Clear all skybox-related caches"""
+    from .cache import clear_all_caches
+    clear_all_caches()
+    print("🗑️ All skybox caches cleared")
+
+def get_cache_info():
+    """Get detailed cache information for debugging"""
+    stats = get_cache_stats()
+    return {
+        "cache_sizes": stats,
+        "total_cached_items": sum(stats.values()),
+        "cache_info": "Skybox lists cached for 5min, Popular lists for 30min, Previews for 24h"
+    }

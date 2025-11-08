@@ -508,6 +508,41 @@ def apply_skybox_fix():
             result["errors"].extend(download_result["errors"])
             return result
         
+        # Load assets.json to get the mapping
+        cache_dir = get_assets_cache_path()
+        assets_json_path = os.path.join(cache_dir, 'assets.json')
+        
+        if not os.path.exists(assets_json_path):
+            result["message"] = "assets.json not found"
+            result["errors"].append(result["message"])
+            return result
+        
+        # Read the assets mapping
+        try:
+            with open(assets_json_path, 'r') as f:
+                assets_data = json.load(f)
+        except Exception as e:
+            result["message"] = f"Failed to load assets.json: {str(e)}"
+            result["errors"].append(result["message"])
+            return result
+        
+        # Swap each asset defined in assets.json
+        # Using place_asset_in_cache which works even if the original doesn't exist
+        swapped_count = 0
+        failed_count = 0
+        
+        for original_hash, replacement_hash in assets_data.items():
+            swap_result = place_asset_in_cache(original_hash, replacement_hash)
+            if swap_result["success"]:
+                result["swapped_assets"].append(original_hash)
+                swapped_count += 1
+                print(f"✅ {swap_result['message']}")
+            else:
+                failed_count += 1
+                error_msg = f"Failed to swap {original_hash}: {swap_result['message']}"
+                result["errors"].append(error_msg)
+                print(f"⚠️ {error_msg}")
+        
         # Apply fastflag for skybox fix
         from .fastflags import apply_fastflags
         
@@ -522,11 +557,17 @@ def apply_skybox_fix():
             result["errors"].extend(fastflag_result["errors"])
             return result
         
-        # TODO: Implement specific asset swapping based on assets.json
-        # For now, just apply the fastflags
-        
-        result["success"] = True
-        result["message"] = "Skybox fix applied successfully (fastflags applied)"
+        # Determine overall success
+        if swapped_count > 0:
+            result["success"] = True
+            if failed_count > 0:
+                result["message"] = f"Skybox fix applied with {swapped_count} assets swapped ({failed_count} failed)"
+            else:
+                result["message"] = f"Skybox fix applied successfully ({swapped_count} assets swapped)"
+        else:
+            result["message"] = "No assets were swapped"
+            if failed_count > 0:
+                result["message"] += f" ({failed_count} failed)"
         
     except Exception as e:
         result["message"] = f"Error applying skybox fix: {str(e)}"

@@ -93,6 +93,33 @@ class SkyboxDownloadWorker(QThread):
             self.error.emit(f"Error downloading {self.sky_name}: {str(e)}")
 
 
+class MessageBoardWorker(QThread):
+    """Worker thread for fetching message board data"""
+    message_loaded = Signal(dict)
+    error_occurred = Signal(str)
+    
+    def __init__(self, api_url):
+        super().__init__()
+        self.api_url = api_url
+    
+    def run(self):
+        """Fetch message from API"""
+        try:
+            import requests
+            response = requests.get(self.api_url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                self.message_loaded.emit(data)
+            else:
+                self.error_occurred.emit(f"API returned status code: {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            self.error_occurred.emit(f"Network error: {str(e)}")
+        except Exception as e:
+            self.error_occurred.emit(f"Error fetching message: {str(e)}")
+
+
 class LoadingWorker(QThread):
     """Worker thread for loading skybox list"""
     skyboxes_loaded = Signal(list, list)  # all_skyboxes, popular_skyboxes
@@ -165,7 +192,7 @@ class LoadingWorker(QThread):
                 # Only try to get popular skyboxes if not in local mode
                 if not self.force_local:
                     try:
-                        popular_skyboxes = get_popular_skyboxes(20)  # Get top 20 popular
+                        popular_skyboxes = get_popular_skyboxes(10)  # Get top 10 popular
                         if not popular_skyboxes:
                             popular_skyboxes = []
                     except Exception as e:
@@ -346,8 +373,10 @@ class GeneralTab(QWidget):
     
     def __init__(self):
         super().__init__()
+        self.message_api_url = "https://simple-message-poster.vercel.app/api/message"
         self.init_ui()
         self.update_client_status()
+        self.load_message_board()
         
     def init_ui(self):
         layout = QVBoxLayout()
@@ -415,8 +444,281 @@ class GeneralTab(QWidget):
         client_group.setLayout(client_layout)
         layout.addWidget(client_group)
         
+        # Message Board Group
+        message_group = QGroupBox("📢 Announcements")
+        message_group.setObjectName("groupBox")
+        message_layout = QVBoxLayout()
+        message_layout.setSpacing(0)
+        message_layout.setContentsMargins(25, 25, 25, 25)
+        
+        # Message title
+        self.message_title = QLabel("Loading...")
+        self.message_title.setObjectName("settingLabel")
+        self.message_title.setWordWrap(True)
+        self.message_title.setStyleSheet("""
+            font-size: 18px;
+            font-weight: 700;
+            color: #A855F7;
+            padding: 0 0 8px 0;
+            margin: 0;
+        """)
+        message_layout.addWidget(self.message_title)
+        
+        # Message content in scroll area
+        self.message_content = QLabel("Fetching latest announcements...")
+        self.message_content.setObjectName("label")
+        self.message_content.setWordWrap(True)
+        self.message_content.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.message_content.setStyleSheet("""
+            font-size: 13px;
+            color: #E5E7EB;
+            line-height: 1.6;
+            padding: 2px 4px;
+            margin: 0;
+            background: transparent;
+        """)
+        self.message_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        
+        # Wrap in scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.message_content)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background-color: rgba(31, 41, 55, 0.5);
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: rgba(168, 85, 247, 0.6);
+                border-radius: 4px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: rgba(168, 85, 247, 0.8);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+        """)
+        scroll_area.setMinimumHeight(200)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        message_layout.addWidget(scroll_area, 1)  # Stretch factor of 1 to expand
+        
+        # Add spacing before footer
+        message_layout.addSpacing(8)
+        
+        # Message footer and timestamp in blog-post style
+        footer_layout = QVBoxLayout()
+        footer_layout.setSpacing(2)
+        
+        self.message_footer = QLabel("")
+        self.message_footer.setObjectName("infoLabel")
+        self.message_footer.setWordWrap(True)
+        self.message_footer.setStyleSheet("""
+            font-size: 11px;
+            color: #9CA3AF;
+            font-style: italic;
+            padding: 0;
+            margin: 0;
+        """)
+        footer_layout.addWidget(self.message_footer)
+        
+        self.message_timestamp = QLabel("")
+        self.message_timestamp.setStyleSheet("""
+            font-size: 10px;
+            color: #6B7280;
+            padding: 0;
+            margin: 0;
+        """)
+        footer_layout.addWidget(self.message_timestamp)
+        
+        message_layout.addLayout(footer_layout)
+        
+        # Add spacing before button
+        message_layout.addSpacing(8)
+        
+        # Buttons row - Refresh and Credits
+        buttons_row_layout = QHBoxLayout()
+        buttons_row_layout.setSpacing(10)
+        
+        self.credits_btn = ModernButton("📝 Credits")
+        self.credits_btn.setObjectName("secondaryButton")
+        self.credits_btn.setFixedWidth(100)
+        self.credits_btn.clicked.connect(self.show_credits_dialog)
+        buttons_row_layout.addWidget(self.credits_btn)
+        
+        buttons_row_layout.addStretch()
+        
+        self.refresh_message_btn = ModernButton("🔄 Refresh")
+        self.refresh_message_btn.setObjectName("secondaryButton")
+        self.refresh_message_btn.setFixedWidth(100)
+        self.refresh_message_btn.clicked.connect(self.load_message_board)
+        buttons_row_layout.addWidget(self.refresh_message_btn)
+        
+        message_layout.addLayout(buttons_row_layout)
+        
+        message_group.setLayout(message_layout)
+        layout.addWidget(message_group)
+        
         layout.addStretch()
         self.setLayout(layout)
+    
+    def show_credits_dialog(self):
+        """Show credits in a popup dialog"""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel
+        from PySide6.QtCore import Qt
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("CDBL Credits")
+        dialog.setMinimumWidth(500)
+        dialog.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
+                                           stop: 0 #1a1a1a, stop: 1 #2d1b3d);
+                color: #ffffff;
+            }
+        """)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(16)
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Title
+        title = QLabel("💻 CDBL Credits")
+        title.setStyleSheet("""
+            font-size: 20px;
+            font-weight: 700;
+            color: #A855F7;
+            padding: 0 0 10px 0;
+        """)
+        layout.addWidget(title)
+        
+        # Made by section
+        made_by_label = QLabel("Made by:")
+        made_by_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #A855F7; padding: 8px 0 4px 0;")
+        layout.addWidget(made_by_label)
+        
+        dev1_label = QLabel('<a href="https://github.com/eman225511" style="color: #8B5CF6; text-decoration: none;">@eman225511</a> on GitHub')
+        dev1_label.setOpenExternalLinks(True)
+        dev1_label.setStyleSheet("font-size: 13px; color: #E5E7EB; padding-left: 16px;")
+        layout.addWidget(dev1_label)
+        
+        dev2_label = QLabel('<a href="https://github.com/7xeh" style="color: #8B5CF6; text-decoration: none;">@7xeh</a> on GitHub')
+        dev2_label.setOpenExternalLinks(True)
+        dev2_label.setStyleSheet("font-size: 13px; color: #E5E7EB; padding-left: 16px;")
+        layout.addWidget(dev2_label)
+        
+        # Ideas section
+        ideas_label = QLabel("Ideas:")
+        ideas_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #A855F7; padding: 12px 0 4px 0;")
+        layout.addWidget(ideas_label)
+        
+        for contributor in ["@Osyrus", "@Fedded", "@Anthonys Mic", "@Kaizenken"]:
+            contrib_label = QLabel(contributor)
+            contrib_label.setStyleSheet("font-size: 13px; color: #E5E7EB; padding-left: 16px;")
+            layout.addWidget(contrib_label)
+        
+        many_more = QLabel("and many more...")
+        many_more.setStyleSheet("font-size: 13px; color: #9CA3AF; font-style: italic; padding-left: 16px;")
+        layout.addWidget(many_more)
+        
+        # Repository link
+        layout.addSpacing(8)
+        repo_label = QLabel('<a href="https://github.com/eman225511/CDBL" style="color: #8B5CF6; text-decoration: none;">🔗 View on GitHub</a>')
+        repo_label.setOpenExternalLinks(True)
+        repo_label.setStyleSheet("font-size: 13px; color: #E5E7EB; font-weight: 500;")
+        layout.addWidget(repo_label)
+        
+        layout.addStretch()
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def load_message_board(self):
+        """Load message board content from API"""
+        # Disable refresh button during loading
+        if hasattr(self, 'refresh_message_btn'):
+            self.refresh_message_btn.setEnabled(False)
+            self.refresh_message_btn.setText("Loading...")
+        
+        # Set loading state
+        self.message_title.setText("Loading...")
+        self.message_content.setText("Fetching latest announcements...")
+        
+        # Cancel any existing worker
+        if hasattr(self, 'message_worker') and self.message_worker.isRunning():
+            self.message_worker.quit()
+            self.message_worker.wait()
+        
+        # Start message fetch in background
+        self.message_worker = MessageBoardWorker(self.message_api_url)
+        self.message_worker.message_loaded.connect(self.on_message_loaded)
+        self.message_worker.error_occurred.connect(self.on_message_error)
+        self.message_worker.start()
+    
+    def on_message_loaded(self, message_data):
+        """Handle successfully loaded message"""
+        try:
+            # Update title
+            title = message_data.get("title", "No Title")
+            self.message_title.setText(title)
+            
+            # Update content
+            content = message_data.get("content", "No content available")
+            self.message_content.setText(content)
+            
+            # Update footer if present
+            footer = message_data.get("footer", "")
+            self.message_footer.setText(footer)
+            
+            # Update timestamp if present
+            timestamp = message_data.get("timestamp", "")
+            if timestamp:
+                try:
+                    from datetime import datetime, timezone
+                    # Parse ISO 8601 format timestamp (UTC)
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    # Convert to local timezone
+                    local_dt = dt.astimezone()
+                    # Format as readable date in local time
+                    formatted_time = local_dt.strftime("%B %d, %Y at %I:%M %p")
+                    self.message_timestamp.setText(f"Updated: {formatted_time}")
+                except Exception as e:
+                    print(f"Error parsing timestamp: {e}")
+                    self.message_timestamp.setText("")
+            else:
+                self.message_timestamp.setText("")
+                
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            self.message_title.setText("Error")
+            self.message_content.setText("Failed to process message data")
+        finally:
+            # Re-enable refresh button
+            if hasattr(self, 'refresh_message_btn'):
+                self.refresh_message_btn.setEnabled(True)
+                self.refresh_message_btn.setText("🔄 Refresh")
+    
+    def on_message_error(self, error_message):
+        """Handle message loading error"""
+        print(f"Message board error: {error_message}")
+        self.message_title.setText("Connection Issue")
+        self.message_content.setText("Unable to load announcements. Please check your internet connection and try again.")
+        self.message_footer.setText("")
+        self.message_timestamp.setText("")
+        
+        # Re-enable refresh button
+        if hasattr(self, 'refresh_message_btn'):
+            self.refresh_message_btn.setEnabled(True)
+            self.refresh_message_btn.setText("🔄 Refresh")
         
     def update_client_status(self):
         """Update the status of installed clients"""
@@ -3143,7 +3445,14 @@ class CustomTitleBar(QWidget):
         app_title.setObjectName("appTitle")
         title_layout.addWidget(app_title)
         
-        version_label = QLabel("v2.0 Beta")
+        # Get version from update.py
+        try:
+            from src.update import APP_VERSION
+            version_text = f"v{APP_VERSION}"
+        except ImportError:
+            version_text = "v2.0 Beta"  # Fallback
+        
+        version_label = QLabel(version_text)
         version_label.setObjectName("versionLabel")
         title_layout.addWidget(version_label)
         
@@ -4059,7 +4368,13 @@ class CDBlauncher(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("CDBL")
-    app.setApplicationVersion("2.0 Beta")
+    
+    # Get version from update.py
+    try:
+        from src.update import APP_VERSION
+        app.setApplicationVersion(APP_VERSION)
+    except ImportError:
+        app.setApplicationVersion("2.0 Beta")  # Fallback
     
     # Set application icon if available
     # app.setWindowIcon(QIcon("icon.ico"))
