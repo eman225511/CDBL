@@ -1,6 +1,7 @@
 # 🌌 CDBL — Custom Roblox Tool
 
 [Premium Features Preview](https://streamable.com/qrm2ck)
+[Buy Premium](https://emanshop.mysellauth.com/product/emans-premium-scriptapp-access)
 
 ---
 
