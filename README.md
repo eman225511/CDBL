@@ -2,7 +2,7 @@
 
 [Premium Features Preview](https://streamable.com/qrm2ck)
 
-[Buy Premium](https://emanshop.mysellauth.com/product/emans-premium-scriptapp-access)
+[Buy Premium](https://illusionsoftworks.mysellauth.com/)
 
 ---
 
