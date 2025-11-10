@@ -2456,7 +2456,7 @@ class PremiumTab(QWidget):
         help_layout.addWidget(help_text)
         
         # Clickable link
-        shop_link = QLabel('<a href="https://emanshop.mysellauth.com/" style="color: #A855F7;">https://emanshop.mysellauth.com/</a>')
+        shop_link = QLabel('<a href="https://illusionsoftworks.mysellauth.com/" style="color: #A855F7;">https://illusionsoftworks.mysellauth.com/</a>')
         shop_link.setOpenExternalLinks(True)
         shop_link.setObjectName("settingsDescription")
         help_layout.addWidget(shop_link)

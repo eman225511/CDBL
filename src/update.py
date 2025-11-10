@@ -9,7 +9,7 @@ from packaging import version
 import json
 
 # ========== Version Data ==========
-APP_VERSION = "1.5-Beta"  # your current version
+APP_VERSION = "1.6-Beta"  # your current version
 GITHUB_USERNAME = "eman225511"  # your GitHub username
 GITHUB_REPO = "CDBL"  # your repo name
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/releases/latest"
@@ -104,7 +104,7 @@ def check_for_updates(timeout=5):
 
 def open_release_page():
     """Open the latest release page in the default browser"""
-    release_url = f"https://github.com/{GITHUB_USERNAME}/{GITHUB_REPO}/releases/latest"
+    release_url = f"https://7xeh.dev/apps/cdbl/"
     webbrowser.open(release_url)
 
 
