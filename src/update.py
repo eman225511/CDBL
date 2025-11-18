@@ -9,7 +9,7 @@ from packaging import version
 import json
 
 # ========== Version Data ==========
-APP_VERSION = "1.6-Beta"  # your current version
+APP_VERSION = "1.7-Beta"  # your current version
 GITHUB_USERNAME = "eman225511"  # your GitHub username
 GITHUB_REPO = "CDBL"  # your repo name
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/releases/latest"

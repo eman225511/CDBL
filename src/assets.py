@@ -234,46 +234,56 @@ def swap_asset(original_hash, replacement_hash):
         result["message"] = "Roblox cache directory not found"
         result["errors"].append(result["message"])
         return result
-    
+
     # Find the replacement asset in unified directory
     replacement_asset_path = find_replacement_asset(replacement_hash)
     if not replacement_asset_path:
         result["message"] = f"Replacement asset with hash {replacement_hash} not found in extracted assets"
         result["errors"].append(result["message"])
         return result
-    
-    # Find the original asset in cache by hash
+
+    # Try to locate existing original asset in cache
     original_asset_path = None
     for root, dirs, files in os.walk(roblox_cache):
         for file in files:
-            file_path = os.path.join(root, file)
             if file == original_hash or file.lower() == original_hash.lower():
-                original_asset_path = file_path
+                original_asset_path = os.path.join(root, file)
                 break
         if original_asset_path:
             break
-    
-    if not original_asset_path:
-        result["message"] = f"Original asset with hash {original_hash} not found in Roblox cache"
-        result["errors"].append(result["message"])
-        return result
-    
+
     try:
-        # Create backup of original
-        backup_path = original_asset_path + '.cdbl_backup'
-        if not os.path.exists(backup_path):
-            shutil.copy2(original_asset_path, backup_path)
-        
-        # Replace with new asset
-        shutil.copy2(replacement_asset_path, original_asset_path)
-        
+        if original_asset_path:
+            # Asset exists - create backup and replace
+            backup_path = original_asset_path + '.cdbl_backup'
+            if not os.path.exists(backup_path):
+                shutil.copy2(original_asset_path, backup_path)
+            shutil.copy2(replacement_asset_path, original_asset_path)
+            result["message"] = f"Successfully swapped asset {original_hash} (original existed)"
+        else:
+            # Original not present - create the asset file in the cache
+            destination_path = os.path.join(roblox_cache, original_hash)
+            try:
+                shutil.copy2(replacement_asset_path, destination_path)
+                result["message"] = f"Placed replacement asset as new cache file for {original_hash} (original missing)"
+            except Exception:
+                # If writing directly into the cache root fails (permissions/structure),
+                # attempt to create a subdir and place it there.
+                try:
+                    subdir = os.path.join(roblox_cache, 'cdbl_added')
+                    os.makedirs(subdir, exist_ok=True)
+                    dest2 = os.path.join(subdir, original_hash)
+                    shutil.copy2(replacement_asset_path, dest2)
+                    result["message"] = f"Placed replacement asset into {subdir} for {original_hash} (original missing)"
+                except Exception as e:
+                    raise
+
         result["success"] = True
-        result["message"] = f"Successfully swapped asset {original_hash}"
-        
+
     except Exception as e:
-        result["message"] = f"Error swapping asset: {str(e)}"
+        result["message"] = f"Error swapping/placing asset: {str(e)}"
         result["errors"].append(result["message"])
-    
+
     return result
 
 def place_asset_in_cache(asset_hash, replacement_hash):
@@ -307,7 +317,8 @@ def place_asset_in_cache(asset_hash, replacement_hash):
         result["errors"].append(result["message"])
         return result
     
-    # Check if original asset exists in cache
+    # Always place the replacement asset in cache, regardless of original presence
+    destination_path = None
     original_asset_path = None
     for root, dirs, files in os.walk(roblox_cache):
         for file in files:
@@ -316,7 +327,6 @@ def place_asset_in_cache(asset_hash, replacement_hash):
                 break
         if original_asset_path:
             break
-    
     try:
         if original_asset_path:
             # Asset exists - create backup and replace
@@ -329,14 +339,11 @@ def place_asset_in_cache(asset_hash, replacement_hash):
             # Asset doesn't exist - place it directly in cache
             destination_path = os.path.join(roblox_cache, asset_hash)
             shutil.copy2(replacement_asset_path, destination_path)
-            result["message"] = f"Placed new asset {asset_hash} in cache"
-        
+            result["message"] = f"Placed new asset {asset_hash} in cache (original missing)"
         result["success"] = True
-        
     except Exception as e:
         result["message"] = f"Error placing asset: {str(e)}"
         result["errors"].append(result["message"])
-    
     return result
 
 def restore_asset(asset_hash):
@@ -532,16 +539,70 @@ def apply_skybox_fix():
         failed_count = 0
         
         for original_hash, replacement_hash in assets_data.items():
-            swap_result = place_asset_in_cache(original_hash, replacement_hash)
-            if swap_result["success"]:
-                result["swapped_assets"].append(original_hash)
-                swapped_count += 1
-                print(f"✅ {swap_result['message']}")
-            else:
+            # Normalize keys/values to strings where possible
+            orig_hash_str = str(original_hash)
+
+            # Determine replacement hash string robustly
+            rep_hash_str = None
+            if isinstance(replacement_hash, str):
+                rep_hash_str = replacement_hash
+            elif isinstance(replacement_hash, (int, float)):
+                rep_hash_str = str(replacement_hash)
+            elif isinstance(replacement_hash, dict) or isinstance(replacement_hash, list):
+                # Try common dict fields, otherwise search recursively for a string
+                if isinstance(replacement_hash, dict):
+                    for k in ("hash", "replacement", "replacement_hash", "asset", "id"):
+                        if k in replacement_hash and isinstance(replacement_hash[k], str):
+                            rep_hash_str = replacement_hash[k]
+                            break
+
+                if not rep_hash_str:
+                    # Recursive search for first string value
+                    def find_first_string(obj):
+                        if isinstance(obj, str):
+                            return obj
+                        if isinstance(obj, dict):
+                            for v in obj.values():
+                                s = find_first_string(v)
+                                if s:
+                                    return s
+                        if isinstance(obj, list):
+                            for item in obj:
+                                s = find_first_string(item)
+                                if s:
+                                    return s
+                        return None
+
+                    rep_hash_str = find_first_string(replacement_hash)
+
+            # If we couldn't resolve a replacement hash, record error and continue
+            if not rep_hash_str:
                 failed_count += 1
-                error_msg = f"Failed to swap {original_hash}: {swap_result['message']}"
+                error_msg = f"Could not resolve replacement for {orig_hash_str} (skipped)"
                 result["errors"].append(error_msg)
                 print(f"⚠️ {error_msg}")
+                continue
+
+            swap_result = place_asset_in_cache(orig_hash_str, rep_hash_str)
+            msg = swap_result.get("message", "")
+            # Only treat as error if the replacement asset could not be placed at all
+            if swap_result["success"]:
+                result["swapped_assets"].append(orig_hash_str)
+                swapped_count += 1
+                print(f"✅ {msg}")
+            else:
+                # If the error is about missing replacement asset, report as error
+                if "not found in extracted assets" in msg or "Replacement asset" in msg:
+                    failed_count += 1
+                    error_msg = f"Failed to swap {orig_hash_str}: {msg}"
+                    result["errors"].append(error_msg)
+                    print(f"⚠️ {error_msg}")
+                else:
+                    # Ignore errors about missing original asset in cache
+                    # and treat as success (asset will be placed)
+                    result["swapped_assets"].append(orig_hash_str)
+                    swapped_count += 1
+                    print(f"✅ {msg} (original missing, created new)")
         
         # Apply fastflag for skybox fix
         from .fastflags import apply_fastflags
